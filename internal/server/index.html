@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mergebot</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 2rem; max-width: 980px; margin-inline: auto; }
+  h1 { font-size: 1.4rem; margin: 0 0 1rem; }
+  form { display: flex; gap: .5rem; margin-bottom: 1.5rem; }
+  input[type=number] { flex: 0 0 160px; padding: .5rem; font-size: 1rem; }
+  button { padding: .5rem .9rem; font-size: 1rem; cursor: pointer; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: .55rem .6rem; border-bottom: 1px solid #8884; }
+  th { font-size: .8rem; text-transform: uppercase; letter-spacing: .03em; opacity: .7; }
+  .badge { display: inline-block; padding: .15rem .55rem; border-radius: 999px; font-size: .8rem; font-weight: 600; }
+  .queued  { background: #9993; }
+  .active  { background: #2d7ff933; color: #2d7ff9; }
+  .merged  { background: #2ea04333; color: #2ea043; }
+  .failed  { background: #f8514933; color: #f85149; }
+  .stopped { background: #9993; opacity: .8; }
+  .msg { opacity: .85; font-size: .9rem; }
+  .err { color: #f85149; font-size: .85rem; }
+  .empty { opacity: .6; padding: 1rem 0; }
+  .num a { font-weight: 600; text-decoration: none; }
+  time { opacity: .6; font-size: .85rem; }
+  .remove { background: none; border: 1px solid #8886; border-radius: 6px; }
+  .tabs { display: flex; gap: .25rem; border-bottom: 1px solid #8884; margin-bottom: .5rem; }
+  .tab { background: none; border: none; border-bottom: 2px solid transparent; padding: .5rem .8rem; font-size: 1rem; opacity: .65; }
+  .tab.active { opacity: 1; border-bottom-color: currentColor; font-weight: 600; }
+  .tab .count { font-size: .8rem; opacity: .6; }
+</style>
+</head>
+<body>
+  <h1>mergebot queue</h1>
+  <form id="add-form">
+    <input type="number" id="pr-number" placeholder="PR number" min="1" required>
+    <button type="submit">Add to queue</button>
+  </form>
+  <nav class="tabs">
+    <button class="tab active" data-tab="queue">Queue <span class="count" id="count-queue"></span></button>
+    <button class="tab" data-tab="history">History <span class="count" id="count-history"></span></button>
+  </nav>
+  <table>
+    <thead>
+      <tr><th>PR</th><th>Status</th><th>Message</th><th>Updated</th><th></th></tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+
+<script>
+let REPO = null;
+let CURRENT_TAB = "queue";
+let LAST_ITEMS = [];
+const QUEUE_PHASES = ["queued", "active"];
+const HISTORY_PHASES = ["merged", "failed", "stopped"];
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  if (!res.ok) throw new Error(await res.text());
+  return res.status === 204 ? null : res.json();
+}
+
+function fmtTime(s) {
+  if (!s) return "";
+  const d = new Date(s);
+  return d.toLocaleTimeString();
+}
+
+function prHref(n) {
+  return REPO ? `https://github.com/${REPO}/pull/${n}` : `#`;
+}
+
+function render(items) {
+  LAST_ITEMS = items;
+  const inQueue = items.filter(it => QUEUE_PHASES.includes(it.phase));
+  const inHistory = items.filter(it => HISTORY_PHASES.includes(it.phase))
+    .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+  document.getElementById("count-queue").textContent = inQueue.length;
+  document.getElementById("count-history").textContent = inHistory.length;
+
+  const shown = CURRENT_TAB === "queue" ? inQueue : inHistory;
+  const rows = document.getElementById("rows");
+  if (!shown.length) {
+    const msg = CURRENT_TAB === "queue"
+      ? "Queue is empty. Add a PR number above."
+      : "No finished pull requests yet.";
+    rows.innerHTML = `<tr><td colspan="5" class="empty">${msg}</td></tr>`;
+    return;
+  }
+  rows.innerHTML = shown.map(it => `
+    <tr>
+      <td class="num"><a href="${prHref(it.number)}" target="_blank">#${it.number}</a></td>
+      <td><span class="badge ${it.phase}">${it.phase}</span></td>
+      <td class="msg">${escapeHtml(it.message || "")}${it.error ? `<div class="err">${escapeHtml(it.error)}</div>` : ""}</td>
+      <td><time>${fmtTime(it.updated_at)}</time></td>
+      <td>${["queued","active"].includes(it.phase) ? `<button class="remove" data-n="${it.number}">remove</button>` : ""}</td>
+    </tr>`).join("");
+  rows.querySelectorAll(".remove").forEach(b =>
+    b.addEventListener("click", () => remove(b.dataset.n)));
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+}
+
+async function refresh() {
+  try { render(await api("/api/items")); }
+  catch (e) { console.error(e); }
+}
+
+async function remove(n) {
+  await api(`/api/items/${n}`, { method: "DELETE" });
+  refresh();
+}
+
+document.getElementById("add-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const input = document.getElementById("pr-number");
+  const number = parseInt(input.value, 10);
+  if (!number) return;
+  try {
+    await api("/api/items", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ number }),
+    });
+    input.value = "";
+    refresh();
+  } catch (e) { alert(e.message); }
+});
+
+document.querySelectorAll(".tab").forEach(tab =>
+  tab.addEventListener("click", () => {
+    CURRENT_TAB = tab.dataset.tab;
+    document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t === tab));
+    render(LAST_ITEMS);
+  }));
+
+(async () => {
+  try { REPO = (await api("/api/config")).repo; } catch (e) { console.error(e); }
+  refresh();
+  setInterval(refresh, 3000);
+})();
+</script>
+</body>
+</html>
