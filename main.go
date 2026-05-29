@@ -20,6 +20,9 @@ import (
 	"github.com/wallester/mergebot/internal/server"
 )
 
+// version is overridden at build time via -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -28,6 +31,14 @@ func main() {
 }
 
 func run() error {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "version", "--version", "-version":
+			fmt.Println("mergebot", version)
+			return nil
+		}
+	}
+
 	// Load a local .env file if present. Variables already set in the real
 	// environment take precedence over the file.
 	_ = godotenv.Load()

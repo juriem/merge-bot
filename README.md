@@ -120,6 +120,19 @@ Every flag has an environment-variable fallback. Precedence:
 | `--addr`          | `MERGEBOT_ADDR`           | `127.0.0.1:8080`      | `serve` only                  |
 | `--state`         | `MERGEBOT_STATE`          | `mergebot-queue.json` | `serve` only                  |
 
+## Releasing
+
+Pushing a tag that starts with `v` triggers the
+[`release`](.github/workflows/release.yml) workflow, which builds a macOS arm64
+binary (with the tag baked into `mergebot --version`) and publishes a **draft**
+GitHub Release with a `mergebot_<tag>_darwin_arm64.tar.gz` archive containing the
+binary, `.env.example` and this README. Review the draft and publish it manually.
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
 ## Queue lifecycle
 
 ```
