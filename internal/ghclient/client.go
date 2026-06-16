@@ -101,6 +101,126 @@ func (c *Client) CheckSummary(ctx context.Context, owner, repo, ref string) (str
 	return strings.Join(parts, "; "), nil
 }
 
+// RequiredChecks returns the names of the status checks that branch protection
+// requires before merging into branch. A branch without protection (or without
+// required checks) yields an empty slice rather than an error.
+func (c *Client) RequiredChecks(ctx context.Context, owner, repo, branch string) ([]string, error) {
+	rsc, resp, err := c.gh.Repositories.GetRequiredStatusChecks(ctx, owner, repo, branch)
+	if err != nil {
+		if resp != nil && resp.StatusCode == http.StatusNotFound {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	// Checks is the current field; Contexts is its deprecated predecessor and
+	// only one of them is ever populated.
+	var names []string
+	if rsc.Checks != nil {
+		for _, check := range *rsc.Checks {
+			if check != nil && check.Context != "" {
+				names = append(names, check.Context)
+			}
+		}
+	}
+	if len(names) == 0 && rsc.Contexts != nil {
+		names = append(names, *rsc.Contexts...)
+	}
+
+	return names, nil
+}
+
+// CheckRuns returns the latest check run per name on ref, merged with legacy
+// commit statuses (some required contexts are posted via the statuses API
+// rather than the Checks API).
+func (c *Client) CheckRuns(ctx context.Context, owner, repo, ref string) ([]merge.CheckRun, error) {
+	byName := make(map[string]merge.CheckRun)
+
+	opts := &github.ListCheckRunsOptions{ListOptions: github.ListOptions{PerPage: 100}}
+	for {
+		runs, resp, err := c.gh.Checks.ListCheckRunsForRef(ctx, owner, repo, ref, opts)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, run := range runs.CheckRuns {
+			name := run.GetName()
+			if prev, ok := byName[name]; ok && prev.Completed && run.GetStatus() != "completed" {
+				continue
+			}
+
+			byName[name] = merge.CheckRun{
+				Name:       name,
+				Completed:  run.GetStatus() == "completed",
+				Conclusion: run.GetConclusion(),
+			}
+		}
+
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+
+	if err := c.addLegacyStatuses(ctx, owner, repo, ref, byName); err != nil {
+		return nil, err
+	}
+
+	result := make([]merge.CheckRun, 0, len(byName))
+	for _, run := range byName {
+		result = append(result, run)
+	}
+
+	return result, nil
+}
+
+// addLegacyStatuses folds commit-status contexts into byName without
+// overwriting a check run of the same name.
+func (c *Client) addLegacyStatuses(ctx context.Context, owner, repo, ref string, byName map[string]merge.CheckRun) error {
+	opts := &github.ListOptions{PerPage: 100}
+	for {
+		combined, resp, err := c.gh.Repositories.GetCombinedStatus(ctx, owner, repo, ref, opts)
+		if err != nil {
+			return err
+		}
+
+		for _, status := range combined.Statuses {
+			name := status.GetContext()
+			if _, ok := byName[name]; ok {
+				continue
+			}
+
+			state := status.GetState()
+			byName[name] = merge.CheckRun{
+				Name:       name,
+				Completed:  state == "success" || state == "failure" || state == "error",
+				Conclusion: statusConclusion(state),
+			}
+		}
+
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+
+	return nil
+}
+
+// statusConclusion maps a legacy commit-status state onto a check-run
+// conclusion so the runner can treat both uniformly.
+func statusConclusion(state string) string {
+	switch state {
+	case "success":
+		return "success"
+	case "failure", "error":
+		return "failure"
+	default:
+		return ""
+	}
+}
+
 const reviewStatusQuery = `query($owner:String!,$repo:String!,$number:Int!){` +
 	`repository(owner:$owner,name:$repo){pullRequest(number:$number){` +
 	`reviewDecision reviewThreads(first:100){nodes{isResolved}pageInfo{hasNextPage}}}}}`

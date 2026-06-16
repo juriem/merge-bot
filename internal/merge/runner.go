@@ -20,6 +20,14 @@ type ReviewStatus struct {
 	ReviewDecision    string // APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED or ""
 }
 
+// CheckRun is the state of a single check on the head commit, reduced to what
+// the required-checks gate needs.
+type CheckRun struct {
+	Name       string
+	Completed  bool   // false while the check is still queued or running
+	Conclusion string // valid once Completed: success, failure, skipped, ...
+}
+
 // GitHub is the subset of the GitHub API the runner depends on.
 type GitHub interface {
 	GetPullRequest(ctx context.Context, owner, repo string, number int) (*github.PullRequest, error)
@@ -27,6 +35,8 @@ type GitHub interface {
 	Merge(ctx context.Context, owner, repo string, number int, method string) error
 	CheckSummary(ctx context.Context, owner, repo, ref string) (string, error)
 	ReviewStatus(ctx context.Context, owner, repo string, number int) (ReviewStatus, error)
+	RequiredChecks(ctx context.Context, owner, repo, branch string) ([]string, error)
+	CheckRuns(ctx context.Context, owner, repo, ref string) ([]CheckRun, error)
 }
 
 // Runner repeatedly inspects a pull request and brings it to a merged state.
@@ -102,11 +112,7 @@ func (r Runner) step(ctx context.Context) (bool, error) {
 	case "clean", "has_hooks":
 		return r.tryMerge(ctx)
 	case "unstable":
-		if r.AllowUnstable {
-			return r.tryMerge(ctx)
-		}
-		r.Logf("non-required checks are red; waiting (pass --allow-unstable to merge anyway)")
-		return false, nil
+		return r.tryMergeUnstable(ctx, pr)
 	case "behind":
 		return false, r.update(ctx, pr.GetHead().GetSHA())
 	case "blocked":
@@ -141,6 +147,73 @@ func (r Runner) tryMerge(ctx context.Context) (bool, error) {
 	}
 
 	return r.merge(ctx)
+}
+
+// tryMergeUnstable handles an "unstable" PR: GitHub reports it mergeable but
+// some check is red or pending. We merge when every *required* check is green,
+// ignoring non-required ones. --allow-unstable forces the merge without
+// inspecting required checks (the old blunt behaviour).
+func (r Runner) tryMergeUnstable(ctx context.Context, pr *github.PullRequest) (bool, error) {
+	if r.AllowUnstable {
+		return r.tryMerge(ctx)
+	}
+
+	ok, reason, err := r.requiredChecksGreen(ctx, pr.GetBase().GetRef(), pr.GetHead().GetSHA())
+	if err != nil {
+		r.Logf("could not verify required checks: %v; will re-check", err)
+		return false, nil
+	}
+	if !ok {
+		r.Logf("waiting: %s", reason)
+		return false, nil
+	}
+
+	r.Logf("all required checks pass; ignoring non-required checks")
+	return r.tryMerge(ctx)
+}
+
+// requiredChecksGreen reports whether every status check that branch protection
+// requires on baseBranch has a successful run on the head commit. With no
+// required checks configured the gate passes (nothing to wait for).
+func (r Runner) requiredChecksGreen(ctx context.Context, baseBranch, headSHA string) (bool, string, error) {
+	required, err := r.Client.RequiredChecks(ctx, r.Owner, r.Repo, baseBranch)
+	if err != nil {
+		return false, "", err
+	}
+	if len(required) == 0 {
+		return true, "", nil
+	}
+
+	runs, err := r.Client.CheckRuns(ctx, r.Owner, r.Repo, headSHA)
+	if err != nil {
+		return false, "", err
+	}
+
+	byName := make(map[string]CheckRun, len(runs))
+	for _, run := range runs {
+		byName[run.Name] = run
+	}
+
+	for _, name := range required {
+		run, ok := byName[name]
+		if !ok || !run.Completed {
+			return false, fmt.Sprintf("required check %q has not completed", name), nil
+		}
+		if !checkSucceeded(run.Conclusion) {
+			return false, fmt.Sprintf("required check %q concluded %q", name, run.Conclusion), nil
+		}
+	}
+
+	return true, "", nil
+}
+
+func checkSucceeded(conclusion string) bool {
+	switch conclusion {
+	case "success", "skipped", "neutral":
+		return true
+	default:
+		return false
+	}
 }
 
 func (r Runner) reviewGate(ctx context.Context) (ok bool, reason string, err error) {

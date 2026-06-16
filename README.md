@@ -22,12 +22,19 @@ checks, conflicts and branch freshness:
 | `clean`           | merge (squash by default)                                      |
 | `behind`          | run **Update branch**, wait for CI to re-run, re-check         |
 | `blocked`         | wait — missing approvals or required checks not green yet      |
-| `unstable`        | wait (or merge with `--allow-unstable`)                        |
+| `unstable`        | merge once all **required** checks pass; wait if a required check is red/pending (force with `--allow-unstable`) |
 | `dirty`           | stop — merge conflicts need a human                            |
 | `draft` / closed  | stop                                                           |
 | `unknown`         | GitHub is still computing; re-check                            |
 
 An already-merged PR is detected and left untouched.
+
+When the state is `unstable`, mergebot reads the base branch's required status
+checks (from branch protection) and merges as soon as every **required** check
+is green — a failing or still-running **non-required** check no longer blocks the
+merge. It keeps waiting while any required check is red or pending. If no
+required checks are configured, an `unstable` PR is merged. `--allow-unstable`
+restores the old behaviour: merge without inspecting which checks are required.
 
 ### Review gate
 
@@ -114,7 +121,7 @@ Every flag has an environment-variable fallback. Precedence:
 | `--interval`      | `MERGEBOT_INTERVAL`       | `30s`                 | re-check frequency            |
 | `--timeout`       | `MERGEBOT_TIMEOUT`        | `60m`                 | give up on a PR after this    |
 | `--merge-method`  | `MERGEBOT_MERGE_METHOD`   | `squash`              | `squash`, `merge` or `rebase` |
-| `--allow-unstable`| `MERGEBOT_ALLOW_UNSTABLE` | `false`               | merge despite non-required red checks |
+| `--allow-unstable`| `MERGEBOT_ALLOW_UNSTABLE` | `false`               | merge an `unstable` PR without checking which checks are required |
 | `--allow-unresolved`| `MERGEBOT_ALLOW_UNRESOLVED` | `false`           | merge despite unresolved threads / requested changes |
 | `--dry-run`       | `MERGEBOT_DRY_RUN`        | `false`               | one-shot mode only            |
 | `--addr`          | `MERGEBOT_ADDR`           | `127.0.0.1:8080`      | `serve` only                  |
