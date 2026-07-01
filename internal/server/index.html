@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mergebot</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f8fa; --surface: #ffffff; --surface-2: #eef1f4;
+    --border: #d6dbe1; --text: #1f2328; --muted: #656d76;
+    --accent: #2563eb; --accent-weak: #2563eb14;
+    --radius: 12px; --shadow: 0 1px 2px #1f23280f, 0 2px 6px #1f232809;
+    --queued: #6b7280; --active: #2563eb; --merged: #1a7f37;
+    --failed: #cf222e; --conflicts: #bc4c00; --approvals: #8250df; --stopped: #57606a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --surface: #161b22; --surface-2: #1b222c;
+      --border: #2a3139; --text: #e6edf3; --muted: #9198a1;
+      --accent: #4c8dff; --accent-weak: #4c8dff24; --shadow: none;
+      --queued: #8b949e; --active: #4c8dff; --merged: #3fb950;
+      --failed: #f85149; --conflicts: #db6d28; --approvals: #a371f7; --stopped: #6e7681;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); line-height: 1.5;
+    font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; }
+  .app { max-width: 1000px; margin-inline: auto; padding: 2rem 1.25rem 4rem; }
+
+  .header { display: flex; align-items: center; gap: .6rem; margin-bottom: 1.5rem; }
+  .header h1 { font-size: 1.35rem; margin: 0; letter-spacing: -.01em; }
+  .header .repo { color: var(--muted); font-size: .95rem; }
+  .logo { width: 22px; height: 22px; color: var(--accent); flex: none; }
+  .hstats { margin-left: auto; display: flex; align-items: center; gap: 1.4rem; }
+  .hstat { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.15; }
+  .hstat .n { font-size: 1.15rem; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .hstat .l { font-size: .68rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .hspark { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }
+  .hspark svg { display: block; }
+  @media (max-width: 720px) { .hstats { display: none; } }
+
+  form#add-form { display: flex; gap: .5rem; margin-bottom: 1.5rem; }
+  input[type=number] { flex: 0 0 180px; padding: .55rem .7rem; font-size: .95rem;
+    border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); }
+  input[type=number]:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak); }
+
+  button { font: inherit; font-size: .9rem; padding: .5rem .85rem; cursor: pointer;
+    border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text);
+    transition: background .12s, border-color .12s, filter .12s; }
+  button:hover { background: var(--surface-2); }
+  #add-form button[type=submit], .primary { border-color: transparent; background: var(--accent); color: #fff; }
+  #add-form button[type=submit]:hover, .primary:hover { filter: brightness(1.08); background: var(--accent); }
+  .danger { color: var(--failed); border-color: color-mix(in srgb, var(--failed) 42%, transparent); }
+  .retry { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 42%, transparent); }
+  td button { padding: .3rem .62rem; font-size: .82rem; }
+
+  .tabs { display: flex; flex-wrap: wrap; gap: .15rem; border-bottom: 1px solid var(--border); margin-bottom: 1rem; }
+  .tab { border: none; border-bottom: 2px solid transparent; border-radius: 8px 8px 0 0;
+    background: none; color: var(--muted); padding: .55rem .85rem; font-size: .95rem; }
+  .tab:hover { background: var(--surface-2); color: var(--text); }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+  .tab .count { display: inline-block; min-width: 1.3em; margin-left: .35rem; padding: 0 .42em; text-align: center;
+    font-size: .74rem; font-weight: 600; color: var(--muted); background: var(--surface-2); border-radius: 999px; }
+  .tab.active .count { color: #fff; background: var(--accent); }
+
+  .stats { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1rem; }
+  .stats span { background: var(--surface); border: 1px solid var(--border); border-radius: 999px;
+    padding: .3rem .75rem; font-size: .85rem; color: var(--muted); }
+  .stats b { color: var(--text); font-weight: 600; }
+
+  .toolbar { display: flex; justify-content: flex-end; gap: .5rem; margin-bottom: .75rem; }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: var(--shadow); overflow: hidden; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: .7rem .9rem; vertical-align: top; }
+  th { font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; font-weight: 600;
+    color: var(--muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
+  tbody tr { border-top: 1px solid var(--border); }
+  tbody tr:first-child { border-top: none; }
+  tbody tr:hover { background: color-mix(in srgb, var(--surface-2) 55%, transparent); }
+  .num a { font-weight: 600; text-decoration: none; color: var(--accent); }
+  .num a:hover { text-decoration: underline; }
+  .msg { color: var(--text); font-size: .9rem; }
+  .err { color: var(--failed); font-size: .82rem; margin-top: .2rem; }
+  time { color: var(--muted); font-size: .85rem; font-variant-numeric: tabular-nums; }
+  .empty { color: var(--muted); text-align: center; padding: 2.4rem 1rem; }
+  .spinner { display: inline-block; width: 14px; height: 14px; margin-right: .5rem; vertical-align: -2px;
+    border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .badge { display: inline-block; padding: .2rem .62rem; border-radius: 999px; font-size: .78rem; font-weight: 600; }
+  .badge.queued { color: var(--queued); background: color-mix(in srgb, var(--queued) 16%, transparent); }
+  .badge.active { color: var(--active); background: color-mix(in srgb, var(--active) 16%, transparent); }
+  .badge.merged { color: var(--merged); background: color-mix(in srgb, var(--merged) 16%, transparent); }
+  .badge.failed { color: var(--failed); background: color-mix(in srgb, var(--failed) 16%, transparent); }
+  .badge.conflicts { color: var(--conflicts); background: color-mix(in srgb, var(--conflicts) 16%, transparent); }
+  .badge.needs_approvals { color: var(--approvals); background: color-mix(in srgb, var(--approvals) 16%, transparent); }
+  .badge.stopped { color: var(--stopped); background: color-mix(in srgb, var(--stopped) 16%, transparent); }
+  .badge.ratio-ok { color: var(--merged); background: color-mix(in srgb, var(--merged) 16%, transparent); font-variant-numeric: tabular-nums; }
+  .badge.ratio-wait { color: var(--approvals); background: color-mix(in srgb, var(--approvals) 16%, transparent); font-variant-numeric: tabular-nums; }
+
+  dialog { width: min(680px, 92vw); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 1.2rem 1.4rem; color: var(--text); background: var(--surface); box-shadow: 0 12px 40px #00000030; }
+  dialog::backdrop { background: #0009; backdrop-filter: blur(2px); }
+  dialog h3 { margin: 0 0 .8rem; font-size: 1.1rem; }
+  .md-selection { max-height: 220px; overflow: auto; display: grid; gap: .2rem; margin-bottom: .8rem;
+    border: 1px solid var(--border); border-radius: 8px; padding: .5rem .6rem; }
+  .md-selection label { font-size: .9rem; display: flex; gap: .45rem; align-items: center; }
+  #md-output { width: 100%; box-sizing: border-box; font-size: .82rem; padding: .6rem; resize: vertical;
+    font-family: ui-monospace, SFMono-Regular, monospace; border: 1px solid var(--border);
+    border-radius: 8px; background: var(--bg); color: var(--text); }
+  .md-actions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: .8rem; }
+
+  @media (max-width: 600px) {
+    .app { padding: 1.2rem .8rem 3rem; }
+    form#add-form { flex-wrap: wrap; }
+    input[type=number] { flex: 1 1 auto; }
+    .card { overflow-x: auto; }
+  }
+</style>
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <svg class="logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="6" cy="6" r="2.3"/><circle cx="6" cy="18" r="2.3"/><circle cx="18" cy="12" r="2.3"/>
+        <path d="M6 8.3v7.4"/><path d="M8.3 6.6c5 .3 7.3 2.4 7.5 5.4"/>
+      </svg>
+      <h1>mergebot</h1>
+      <span class="repo" id="repo-label"></span>
+      <div class="hstats" id="hstats"></div>
+    </header>
+
+    <form id="add-form">
+      <input type="number" id="pr-number" placeholder="PR number" min="1" required>
+      <button type="submit">Add to queue</button>
+    </form>
+
+    <nav class="tabs">
+      <button class="tab active" data-tab="queue">Merge Queue <span class="count" id="count-queue"></span></button>
+      <button class="tab" data-tab="conflicts">Merge conflicts <span class="count" id="count-conflicts"></span></button>
+      <button class="tab" data-tab="mine">My Open PR <span class="count" id="count-mine"></span></button>
+      <button class="tab" data-tab="failed">Failed <span class="count" id="count-failed"></span></button>
+      <button class="tab" data-tab="history">History <span class="count" id="count-history"></span></button>
+    </nav>
+
+    <div id="stats" class="stats" hidden></div>
+    <div id="toolbar" class="toolbar" hidden>
+      <button id="refresh-mine" hidden>Refresh</button>
+      <button id="generate" class="primary" hidden>Generate list</button>
+      <button id="clear-all" class="danger" hidden>Clear All</button>
+    </div>
+
+    <div class="card">
+      <table>
+        <thead>
+          <tr><th>PR</th><th>Status</th><th>Message</th><th>Time</th><th></th></tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <dialog id="md-dialog">
+    <h3>PRs awaiting approvals — markdown</h3>
+    <div id="md-selection" class="md-selection"></div>
+    <textarea id="md-output" rows="12" readonly></textarea>
+    <div class="md-actions">
+      <button id="md-copy" type="button">Copy</button>
+      <button id="md-close" type="button">Close</button>
+    </div>
+  </dialog>
+
+<script>
+let REPO = null;
+let CURRENT_TAB = "queue";
+let LAST_ITEMS = [];
+let READY = [];
+let READY_LOADED = false;
+const QUEUE_PHASES = ["queued", "active"];
+const CONFLICT_PHASES = ["conflicts"];
+const FAILED_PHASES = ["failed", "stopped"];
+const HISTORY_PHASES = ["merged"];
+const CLEARABLE = { failed: FAILED_PHASES, history: HISTORY_PHASES };
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  if (!res.ok) throw new Error(await res.text());
+  return res.status === 204 ? null : res.json();
+}
+
+function fmtTime(s) {
+  if (!s) return "";
+  const d = new Date(s);
+  return d.toLocaleTimeString();
+}
+
+function prHref(n) {
+  return REPO ? `https://github.com/${REPO}/pull/${n}` : `#`;
+}
+
+function fmtDur(sec) {
+  sec = Math.round(sec);
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  if (h) return `${h}h${m}m`;
+  if (m) return `${m}m${s}s`;
+  return `${s}s`;
+}
+
+// Total wall-clock a PR has spent in the queue: live for in-flight PRs, frozen
+// at the finishing time for terminal ones.
+function elapsedSec(it) {
+  const start = new Date(it.added_at);
+  const end = it.merged_at ? new Date(it.merged_at)
+    : QUEUE_PHASES.includes(it.phase) ? new Date()
+    : new Date(it.updated_at);
+  return Math.max(0, (end - start) / 1000);
+}
+
+function renderStats(items) {
+  const el = document.getElementById("stats");
+  const durations = items
+    .filter(it => it.phase === "merged" && it.merged_at)
+    .map(it => (new Date(it.merged_at) - new Date(it.added_at)) / 1000)
+    .filter(d => d >= 0);
+
+  if (CURRENT_TAB !== "history" || !durations.length) {
+    el.hidden = true;
+    return;
+  }
+
+  const sum = durations.reduce((a, b) => a + b, 0);
+  el.innerHTML =
+    `<span>Merged <b>${durations.length}</b></span>` +
+    `<span>avg <b>${fmtDur(sum / durations.length)}</b></span>` +
+    `<span>fastest <b>${fmtDur(Math.min(...durations))}</b></span>` +
+    `<span>slowest <b>${fmtDur(Math.max(...durations))}</b></span>`;
+  el.hidden = false;
+}
+
+const RECENT_FIRST = (a, b) => new Date(b.updated_at) - new Date(a.updated_at);
+
+function sparkline(values) {
+  if (!values.length) return "";
+  const w = 116, h = 26, n = values.length, max = Math.max(...values, 1), bw = w / n;
+  const bars = values.map((v, i) => {
+    const bh = Math.max(2, (v / max) * (h - 2));
+    return `<rect x="${(i * bw).toFixed(1)}" y="${(h - bh).toFixed(1)}" width="${Math.max(1, bw - 1.5).toFixed(1)}" height="${bh.toFixed(1)}" rx="1" fill="var(--accent)" opacity="0.75"/>`;
+  }).join("");
+  return `<svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" preserveAspectRatio="none" aria-hidden="true">${bars}</svg>`;
+}
+
+function renderHeaderStats(items) {
+  const inQueue = items.filter(it => QUEUE_PHASES.includes(it.phase)).length;
+  const merged = items.filter(it => it.phase === "merged" && it.merged_at);
+  const durs = merged.map(it => (new Date(it.merged_at) - new Date(it.added_at)) / 1000).filter(d => d >= 0);
+  const avg = durs.length ? durs.reduce((a, b) => a + b, 0) / durs.length : 0;
+  const recent = merged.slice()
+    .sort((a, b) => new Date(a.merged_at) - new Date(b.merged_at))
+    .slice(-16)
+    .map(it => (new Date(it.merged_at) - new Date(it.added_at)) / 1000);
+
+  document.getElementById("hstats").innerHTML =
+    `<div class="hstat"><span class="n">${inQueue}</span><span class="l">in queue</span></div>` +
+    `<div class="hstat"><span class="n">${merged.length}</span><span class="l">merged</span></div>` +
+    `<div class="hstat"><span class="n">${avg ? fmtDur(avg) : "—"}</span><span class="l">avg merge</span></div>` +
+    (recent.length ? `<div class="hspark" title="recent merge times">${sparkline(recent)}<span class="l">merge time</span></div>` : "");
+}
+
+const PHASE_LABELS = {
+  queued: "Queued", active: "Active", merged: "Merged", failed: "Failed",
+  conflicts: "Conflict", needs_approvals: "Needs approval", stopped: "Stopped",
+};
+function phaseLabel(p) { return PHASE_LABELS[p] || p; }
+
+function actionCell(it) {
+  if (QUEUE_PHASES.includes(it.phase))
+    return `<button class="remove" data-remove="${it.number}">remove</button>`;
+  if (FAILED_PHASES.includes(it.phase))
+    return `<button class="retry" data-retry="${it.number}">retry</button>`;
+  if (it.phase === "conflicts")
+    return `<button class="retry" data-requeue="${it.number}">recheck</button>`;
+  return "";
+}
+
+// My Open PR: my open PRs from the review dashboard, excluding any that are
+// already in the merge queue (queued/active). Conflicts sort first, then the
+// PRs furthest from the approval target.
+function myOpenItems() {
+  const inQueue = new Set(LAST_ITEMS.filter(it => QUEUE_PHASES.includes(it.phase)).map(it => it.number));
+  const rank = e => e.conflict ? Infinity : Math.max(0, e.required - e.approvals);
+  return READY.filter(e => !inQueue.has(e.number)).sort((a, b) => rank(b) - rank(a));
+}
+
+function mineRow(e) {
+  const ready = !e.conflict && e.approvals >= e.required;
+  const status = e.conflict
+    ? `<span class="badge conflicts">Merge conflict</span>`
+    : `<span class="badge ${ready ? "ratio-ok" : "ratio-wait"}">${e.approvals}/${e.required}</span>`;
+  const action = ready ? `<button class="primary" data-add="${e.number}">Add to queue</button>` : "";
+  return `<tr>
+    <td class="num"><a href="${prHref(e.number)}" target="_blank">#${e.number}</a></td>
+    <td>${status}</td>
+    <td class="msg">${escapeHtml(e.title || "")}</td>
+    <td></td>
+    <td>${action}</td>
+  </tr>`;
+}
+
+function render(items) {
+  LAST_ITEMS = items;
+  const byTab = {
+    queue: items.filter(it => QUEUE_PHASES.includes(it.phase)),
+    conflicts: items.filter(it => CONFLICT_PHASES.includes(it.phase)).sort(RECENT_FIRST),
+    mine: myOpenItems(),
+    failed: items.filter(it => FAILED_PHASES.includes(it.phase)).sort(RECENT_FIRST),
+    history: items.filter(it => HISTORY_PHASES.includes(it.phase)).sort(RECENT_FIRST),
+  };
+  document.getElementById("count-queue").textContent = byTab.queue.length;
+  document.getElementById("count-conflicts").textContent = byTab.conflicts.length;
+  document.getElementById("count-mine").textContent = READY_LOADED ? byTab.mine.length : "…";
+  document.getElementById("count-failed").textContent = byTab.failed.length;
+  document.getElementById("count-history").textContent = byTab.history.length;
+  renderHeaderStats(items);
+  renderStats(items);
+
+  const clr = document.getElementById("clear-all");
+  const gen = document.getElementById("generate");
+  const ref = document.getElementById("refresh-mine");
+  clr.hidden = !((CURRENT_TAB in CLEARABLE) && byTab[CURRENT_TAB].length);
+  gen.hidden = !(CURRENT_TAB === "mine" && byTab.mine.length);
+  ref.hidden = CURRENT_TAB !== "mine";
+  document.getElementById("toolbar").hidden = clr.hidden && gen.hidden && ref.hidden;
+
+  const emptyMsg = {
+    queue: "Queue is empty. Add a PR number above.",
+    conflicts: "No pull requests with merge conflicts.",
+    mine: "No open pull requests of yours outside the queue.",
+    failed: "No failed or stopped pull requests.",
+    history: "No merged pull requests yet.",
+  };
+  const shown = byTab[CURRENT_TAB];
+  const rows = document.getElementById("rows");
+  if (!shown.length) {
+    const cell = (CURRENT_TAB === "mine" && !READY_LOADED)
+      ? `<span class="spinner"></span>Loading your open pull requests…`
+      : emptyMsg[CURRENT_TAB];
+    rows.innerHTML = `<tr><td colspan="5" class="empty">${cell}</td></tr>`;
+    return;
+  }
+  rows.innerHTML = CURRENT_TAB === "mine"
+    ? shown.map(mineRow).join("")
+    : shown.map(it => `
+    <tr>
+      <td class="num"><a href="${prHref(it.number)}" target="_blank">#${it.number}</a></td>
+      <td><span class="badge ${it.phase}">${phaseLabel(it.phase)}</span></td>
+      <td class="msg">${escapeHtml(it.message || "")}${it.error ? `<div class="err">${escapeHtml(it.error)}</div>` : ""}</td>
+      <td><time>${it.added_at ? fmtDur(elapsedSec(it)) : ""}</time></td>
+      <td>${actionCell(it)}</td>
+    </tr>`).join("");
+  rows.querySelectorAll("[data-remove]").forEach(b =>
+    b.addEventListener("click", () => remove(b.dataset.remove)));
+  rows.querySelectorAll("[data-retry]").forEach(b =>
+    b.addEventListener("click", () => retry(b.dataset.retry)));
+  rows.querySelectorAll("[data-requeue]").forEach(b =>
+    b.addEventListener("click", () => requeueNow(b.dataset.requeue)));
+  rows.querySelectorAll("[data-add]").forEach(b =>
+    b.addEventListener("click", () => addToQueue(b.dataset.add)));
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+}
+
+async function refresh() {
+  try {
+    const [items, ready] = await Promise.all([
+      api("/api/items"),
+      api("/api/ready").catch(() => ({ prs: [], loaded: true })),
+    ]);
+    READY = ready.prs || [];
+    READY_LOADED = !!ready.loaded;
+    render(items);
+  } catch (e) { console.error(e); }
+}
+
+async function remove(n) {
+  await api(`/api/items/${n}`, { method: "DELETE" });
+  refresh();
+}
+
+async function retry(n) {
+  await api("/api/items", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ number: parseInt(n, 10) }),
+  });
+  refresh();
+}
+
+async function requeueNow(n) {
+  try {
+    await api(`/api/items/${n}/requeue`, { method: "POST" });
+    refresh();
+  } catch (e) { alert(e.message); }
+}
+
+async function addToQueue(n) {
+  await api("/api/items", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ number: parseInt(n, 10) }),
+  });
+  refresh();
+}
+
+async function clearAll() {
+  const phases = CLEARABLE[CURRENT_TAB];
+  if (!phases || !confirm(`Clear all ${CURRENT_TAB} items?`)) return;
+  await api(`/api/items?phase=${phases.join(",")}`, { method: "DELETE" });
+  refresh();
+}
+
+document.getElementById("clear-all").addEventListener("click", clearAll);
+
+async function refreshMine() {
+  const btn = document.getElementById("refresh-mine");
+  btn.disabled = true;
+  btn.textContent = "Refreshing…";
+  try { await api("/api/ready/refresh", { method: "POST" }); } catch (e) { /* ignore */ }
+  await new Promise(r => setTimeout(r, 2500));
+  await refresh();
+  btn.disabled = false;
+  btn.textContent = "Refresh";
+}
+
+document.getElementById("refresh-mine").addEventListener("click", refreshMine);
+
+function needed(e) { return Math.max(0, e.required - e.approvals); }
+
+// The generated message is an approval nudge, so PRs blocked by a merge conflict
+// (which need a rebase, not approvals) are left out entirely.
+function generatable() {
+  return myOpenItems().filter(e => !e.conflict);
+}
+
+function openGenerate() {
+  const sel = document.getElementById("md-selection");
+  const list = generatable();
+  sel.innerHTML = list.length
+    ? list.map(e =>
+        `<label><input type="checkbox" checked data-num="${e.number}"> #${e.number} · ${e.approvals}/${e.required} · ${escapeHtml(e.title || "")}</label>`
+      ).join("")
+    : "<p class='empty'>No pull requests awaiting approvals.</p>";
+  sel.querySelectorAll("input").forEach(cb => cb.addEventListener("change", renderMarkdown));
+  renderMarkdown();
+  document.getElementById("md-dialog").showModal();
+}
+
+function renderMarkdown() {
+  const picked = new Set([...document.querySelectorAll("#md-selection input:checked")]
+    .map(cb => parseInt(cb.dataset.num, 10)));
+  const chosen = generatable().filter(e => picked.has(e.number));
+
+  const groups = new Map();
+  chosen.forEach(e => {
+    const n = needed(e);
+    if (!groups.has(n)) groups.set(n, []);
+    groups.get(n).push(e);
+  });
+  const md = [...groups.keys()].sort((a, b) => b - a).map(n => {
+    const head = n > 0 ? `### ${n} approval${n > 1 ? "s" : ""} needed` : "### Ready (0 approvals needed)";
+    const lines = groups.get(n).map(e => `- [#${e.number}](${prHref(e.number)}) ${e.title || ""} (${e.approvals}/${e.required})`);
+    return `${head}\n${lines.join("\n")}`;
+  }).join("\n\n");
+
+  document.getElementById("md-output").value = md || "_No pull requests selected._";
+}
+
+document.getElementById("generate").addEventListener("click", openGenerate);
+document.getElementById("md-close").addEventListener("click", () =>
+  document.getElementById("md-dialog").close());
+document.getElementById("md-copy").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText(document.getElementById("md-output").value); }
+  catch (e) { /* clipboard may be unavailable; the textarea is selectable */ }
+});
+
+document.getElementById("add-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const input = document.getElementById("pr-number");
+  const number = parseInt(input.value, 10);
+  if (!number) return;
+  try {
+    await api("/api/items", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ number }),
+    });
+    input.value = "";
+    refresh();
+  } catch (e) { alert(e.message); }
+});
+
+document.querySelectorAll(".tab").forEach(tab =>
+  tab.addEventListener("click", () => {
+    CURRENT_TAB = tab.dataset.tab;
+    document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t === tab));
+    render(LAST_ITEMS);
+  }));
+
+(async () => {
+  try {
+    REPO = (await api("/api/config")).repo;
+    if (REPO) document.getElementById("repo-label").textContent = REPO;
+  } catch (e) { console.error(e); }
+  refresh();
+  setInterval(refresh, 3000);
+})();
+</script>
+</body>
+</html>
