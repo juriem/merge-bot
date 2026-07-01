@@ -470,6 +470,14 @@ func (m *Manager) process(ctx context.Context, it *Item) {
 		it.Phase = PhaseNeedsApprovals
 		it.Message = "needs approvals"
 		it.Error = err.Error()
+	case errors.Is(err, merge.ErrRequiredCheckFailed):
+		it.Phase = PhaseFailed
+		it.Message = "required check failed"
+		it.Error = err.Error()
+	case errors.Is(err, merge.ErrBlocked):
+		it.Phase = PhaseFailed
+		it.Message = "blocked by branch protection"
+		it.Error = err.Error()
 	default:
 		it.Phase = PhaseFailed
 		it.Message = "failed"

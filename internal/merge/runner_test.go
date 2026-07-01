@@ -19,6 +19,7 @@ type fakeGitHub struct {
 	review      ReviewStatus
 	mergeErr    error
 	updateErr   error
+	behindBy    int
 
 	merged  bool
 	updated bool
@@ -55,6 +56,10 @@ func (f *fakeGitHub) RequiredChecks(context.Context, string, string, string) ([]
 
 func (f *fakeGitHub) CheckRuns(context.Context, string, string, string) ([]CheckRun, error) {
 	return f.runs, f.runsErr
+}
+
+func (f *fakeGitHub) BehindBy(context.Context, string, string, string, string) (int, error) {
+	return f.behindBy, nil
 }
 
 func openPR(state string) *github.PullRequest {
@@ -384,11 +389,36 @@ func Test_step_MovesToNeedsApprovals_InCaseOfBlockedAndTooFewApprovals(t *testin
 	}
 }
 
-func Test_step_Waits_InCaseOfBlockedButApprovalsMet(t *testing.T) {
-	// Arrange: blocked for some other reason (e.g. a required check), approvals fine.
+func Test_step_Declines_InCaseOfBlockedWithFailedCheck(t *testing.T) {
+	// Arrange: approved but blocked, and a required check has failed (no pending).
 	f := &fakeGitHub{
 		pr:     openPR("blocked"),
 		review: ReviewStatus{Approvals: 2},
+		runs: []CheckRun{
+			passedRun("unit"),
+			{Name: "frontend-api", Completed: true, Conclusion: "failure"},
+		},
+	}
+	r := newRunner(f)
+	r.MinApprovals = 2
+
+	// Act
+	_, err := r.step(context.Background())
+
+	// Assert
+	if !errors.Is(err, ErrRequiredCheckFailed) {
+		t.Fatalf("expected ErrRequiredCheckFailed, got: %v", err)
+	}
+}
+
+func Test_step_UpdatesBranch_InCaseOfBlockedFailedCheckButBehind(t *testing.T) {
+	// Arrange: a required check failed, but the branch is behind base — updating
+	// re-runs CI, which may recover a stale/transient failure.
+	f := &fakeGitHub{
+		pr:       openPR("blocked"),
+		review:   ReviewStatus{Approvals: 2},
+		runs:     []CheckRun{{Name: "frontend-api", Completed: true, Conclusion: "failure"}},
+		behindBy: 3,
 	}
 	r := newRunner(f)
 	r.MinApprovals = 2
@@ -401,7 +431,52 @@ func Test_step_Waits_InCaseOfBlockedButApprovalsMet(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if done {
-		t.Fatal("expected done=false (keep polling)")
+		t.Fatal("expected done=false (updating, not declining)")
+	}
+	if !f.updated {
+		t.Fatal("expected the branch to be updated to re-run CI")
+	}
+}
+
+func Test_step_Waits_InCaseOfBlockedWithPendingCheck(t *testing.T) {
+	// Arrange: blocked, approved, but a check is still running.
+	f := &fakeGitHub{
+		pr:     openPR("blocked"),
+		review: ReviewStatus{Approvals: 2},
+		runs:   []CheckRun{passedRun("unit"), {Name: "build", Completed: false}},
+	}
+	r := newRunner(f)
+	r.MinApprovals = 2
+
+	// Act
+	done, err := r.step(context.Background())
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if done {
+		t.Fatal("expected done=false (waiting on pending check)")
+	}
+}
+
+func Test_step_Surfaces_InCaseOfBlockedAllChecksGreen(t *testing.T) {
+	// Arrange: approved, all checks green, yet still blocked (e.g. a
+	// require_last_push_approval gate the bot cannot satisfy).
+	f := &fakeGitHub{
+		pr:     openPR("blocked"),
+		review: ReviewStatus{Approvals: 2},
+		runs:   []CheckRun{passedRun("unit"), passedRun("build")},
+	}
+	r := newRunner(f)
+	r.MinApprovals = 2
+
+	// Act
+	_, err := r.step(context.Background())
+
+	// Assert
+	if !errors.Is(err, ErrBlocked) {
+		t.Fatalf("expected ErrBlocked, got: %v", err)
 	}
 }
 

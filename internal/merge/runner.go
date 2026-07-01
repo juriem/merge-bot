@@ -30,6 +30,12 @@ var (
 	// approving reviews. Waiting on approvals would block the single-worker
 	// queue, so the PR is moved aside to be re-queued once it has been reviewed.
 	ErrInsufficientApprovals = errors.New("insufficient approvals")
+
+	// ErrBlocked marks a PR that GitHub reports as "blocked" for a branch-
+	// protection reason the bot cannot satisfy (e.g. require_last_push_approval)
+	// with no checks pending. Nothing the poll loop does will clear it, so it is
+	// surfaced instead of spun until the timeout.
+	ErrBlocked = errors.New("blocked by branch protection")
 )
 
 // ReviewStatus captures the review-side gates that GitHub's mergeable_state may
@@ -59,6 +65,7 @@ type GitHub interface {
 	ReviewStatus(ctx context.Context, owner, repo string, number int) (ReviewStatus, error)
 	RequiredChecks(ctx context.Context, owner, repo, branch string) ([]string, error)
 	CheckRuns(ctx context.Context, owner, repo, ref string) ([]CheckRun, error)
+	BehindBy(ctx context.Context, owner, repo, base, head string) (int, error)
 }
 
 // Runner repeatedly inspects a pull request and brings it to a merged state.
@@ -143,16 +150,7 @@ func (r Runner) step(ctx context.Context) (bool, error) {
 	case "behind":
 		return false, r.update(ctx, pr.GetHead().GetSHA())
 	case "blocked":
-		// Branch protection reports a PR that is merely under-approved as
-		// "blocked", so route it the same way the review gate would for a clean
-		// PR; anything else stays here and keeps polling.
-		if !r.AllowUnresolved {
-			if _, _, err := r.reviewGate(ctx); errors.Is(err, ErrInsufficientApprovals) {
-				return false, err
-			}
-		}
-		r.logBlockers(ctx, pr.GetHead().GetSHA())
-		return false, nil
+		return r.handleBlocked(ctx, pr)
 	case "dirty":
 		return false, fmt.Errorf("PR #%d has merge conflicts; resolve them manually: %w", r.Number, ErrConflicts)
 	case "draft":
@@ -186,6 +184,63 @@ func (r Runner) tryMerge(ctx context.Context) (bool, error) {
 	}
 
 	return r.merge(ctx)
+}
+
+// handleBlocked deals with a PR GitHub reports as "blocked" (a required gate is
+// unmet). The bot cannot merge it, so instead of waiting out the timeout it
+// reacts based on the checks — this works even when the required-check list is
+// hidden (rulesets), which is why it inspects check runs directly:
+//   - under-approved              → park for approvals;
+//   - some check still running    → wait (it may unblock);
+//   - a check has failed          → a required check failed, decline;
+//   - all green but still blocked → held by a gate the bot can't satisfy
+//     (e.g. require_last_push_approval), surface instead of spinning.
+func (r Runner) handleBlocked(ctx context.Context, pr *github.PullRequest) (bool, error) {
+	if !r.AllowUnresolved {
+		if _, _, err := r.reviewGate(ctx); errors.Is(err, ErrInsufficientApprovals) {
+			return false, err
+		}
+	}
+
+	head := pr.GetHead().GetSHA()
+	runs, err := r.Client.CheckRuns(ctx, r.Owner, r.Repo, head)
+	if err != nil {
+		r.Logf("blocked; could not list checks: %v; will re-check", err)
+		return false, nil
+	}
+
+	var pending, failed int
+	for _, run := range runs {
+		switch {
+		case !run.Completed:
+			pending++
+		case !checkSucceeded(run.Conclusion):
+			failed++
+		}
+	}
+
+	switch {
+	case pending > 0:
+		r.Logf("blocked: %d check(s) still running; waiting", pending)
+		return false, nil
+	case failed > 0:
+		// A failed required check is often stale: if the branch is behind base,
+		// update it so CI re-runs and a transient failure recovers. Only decline
+		// once the branch is current and the check still fails.
+		behind, err := r.Client.BehindBy(ctx, r.Owner, r.Repo, pr.GetBase().GetRef(), head)
+		if err != nil {
+			r.Logf("blocked; could not compare with base: %v; will re-check", err)
+			return false, nil
+		}
+		if behind > 0 {
+			r.Logf("blocked by %d failed check(s); branch is %d commit(s) behind base — updating to re-run CI", failed, behind)
+			return false, r.update(ctx, head)
+		}
+		r.logBlockers(ctx, head)
+		return false, fmt.Errorf("PR #%d blocked by %d failed required check(s) on an up-to-date branch: %w", r.Number, failed, ErrRequiredCheckFailed)
+	default:
+		return false, fmt.Errorf("PR #%d is blocked by branch protection and cannot be merged automatically: %w", r.Number, ErrBlocked)
+	}
 }
 
 // tryMergeUnstable handles an "unstable" PR: GitHub reports it mergeable but

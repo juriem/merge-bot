@@ -93,6 +93,18 @@ func (c *Client) MergeableState(ctx context.Context, owner, repo string, number 
 	return pr.GetMergeableState(), nil
 }
 
+// BehindBy returns how many commits head is behind base (0 when head already
+// contains everything in base). Used to decide whether updating a branch would
+// re-run CI.
+func (c *Client) BehindBy(ctx context.Context, owner, repo, base, head string) (int, error) {
+	cmp, _, err := c.gh.Repositories.CompareCommits(ctx, owner, repo, base, head, &github.ListOptions{PerPage: 1})
+	if err != nil {
+		return 0, err
+	}
+
+	return cmp.GetBehindBy(), nil
+}
+
 // CurrentUser returns the login of the authenticated token owner.
 func (c *Client) CurrentUser(ctx context.Context) (string, error) {
 	user, _, err := c.gh.Users.Get(ctx, "")
