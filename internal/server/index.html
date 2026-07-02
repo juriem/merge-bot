@@ -294,11 +294,18 @@ function actionCell(it) {
 // (unstable).
 function addable(state) { return state === "clean" || state === "unstable"; }
 
+// Phases that already have their own tab. A PR the queue is tracking in one of
+// these is shown there, so it's excluded from the dashboard tabs to avoid
+// duplicates. `needs_approvals` has no tab of its own, so those PRs are NOT
+// excluded — they surface via their dashboard row (in My Open PR).
+const TABBED_PHASES = ["queued", "active", "conflicts", "failed", "stopped", "merged"];
+
 // dashItems returns the dashboard entries (my open PRs) the backend triaged into
-// the given category, that the queue is not already tracking.
+// the given category, that aren't already shown in another tab.
 function dashItems(category) {
-  const tracked = new Set(LAST_ITEMS.map(it => it.number));
-  return READY.filter(e => e.category === category && !tracked.has(e.number));
+  const shownElsewhere = new Set(
+    LAST_ITEMS.filter(it => TABBED_PHASES.includes(it.phase)).map(it => it.number));
+  return READY.filter(e => e.category === category && !shownElsewhere.has(e.number));
 }
 
 // My Open PR: my open PRs that are ready or in progress (not conflicting, not a
