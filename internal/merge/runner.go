@@ -209,15 +209,7 @@ func (r Runner) handleBlocked(ctx context.Context, pr *github.PullRequest) (bool
 		return false, nil
 	}
 
-	var pending, failed int
-	for _, run := range runs {
-		switch {
-		case !run.Completed:
-			pending++
-		case !checkSucceeded(run.Conclusion):
-			failed++
-		}
-	}
+	pending, failed := CountChecks(runs)
 
 	switch {
 	case failed > 0:
@@ -299,6 +291,21 @@ func checkSucceeded(conclusion string) bool {
 	default:
 		return false
 	}
+}
+
+// CountChecks tallies check runs that are still pending and ones that completed
+// unsuccessfully. Shared by the runner and the review dashboard.
+func CountChecks(runs []CheckRun) (pending, failed int) {
+	for _, run := range runs {
+		switch {
+		case !run.Completed:
+			pending++
+		case !checkSucceeded(run.Conclusion):
+			failed++
+		}
+	}
+
+	return pending, failed
 }
 
 func (r Runner) reviewGate(ctx context.Context) (ok bool, reason string, err error) {

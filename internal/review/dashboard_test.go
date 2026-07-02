@@ -12,13 +12,14 @@ import (
 // fakeFetcher keys behind/runs by PR number; PullState returns the number as the
 // head SHA so BehindBy/CheckRuns can look them up.
 type fakeFetcher struct {
-	user     string
-	prs      []PR
-	states   map[int]string
-	behind   map[int]int
-	runs     map[int][]merge.CheckRun
-	statuses map[int]merge.ReviewStatus
-	statErr  map[int]error
+	user      string
+	prs       []PR
+	states    map[int]string
+	behind    map[int]int
+	behindErr error
+	runs      map[int][]merge.CheckRun
+	statuses  map[int]merge.ReviewStatus
+	statErr   map[int]error
 }
 
 func (f fakeFetcher) CurrentUser(context.Context) (string, error) { return f.user, nil }
@@ -36,6 +37,9 @@ func (f fakeFetcher) PullState(_ context.Context, _, _ string, number int) (stri
 }
 
 func (f fakeFetcher) BehindBy(_ context.Context, _, _, _, head string) (int, error) {
+	if f.behindErr != nil {
+		return 0, f.behindErr
+	}
 	n, _ := strconv.Atoi(head)
 	return f.behind[n], nil
 }
@@ -140,6 +144,31 @@ func Test_Refresh_CategorisesBlockedPRs(t *testing.T) {
 		if cat[n] != w {
 			t.Fatalf("PR #%d category = %q, want %q", n, cat[n], w)
 		}
+	}
+}
+
+func Test_Refresh_BlockedStaysInMineWhenBehindUnknown(t *testing.T) {
+	// Arrange: blocked with a failed check, but the behind-check errors — we can't
+	// tell if it's recoverable, so it must NOT be declared dead-failed.
+	f := fakeFetcher{
+		user:      "me",
+		prs:       []PR{{Number: 1}},
+		states:    map[int]string{1: "blocked"},
+		behindErr: errors.New("compare boom"),
+		runs:      map[int][]merge.CheckRun{1: {{Name: "ci", Completed: true, Conclusion: "failure"}}},
+		statuses:  map[int]merge.ReviewStatus{1: {Approvals: 2}},
+	}
+	d := NewDashboard(f, "o", "r", 2, "", func(string, ...any) {})
+
+	// Act
+	if err := d.Refresh(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Assert
+	got := d.List()
+	if len(got) != 1 || got[0].Category != CategoryMine {
+		t.Fatalf("expected PR #1 to stay in mine, got %+v", got)
 	}
 }
 

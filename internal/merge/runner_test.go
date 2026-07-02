@@ -496,6 +496,20 @@ func Test_step_Retries_InCaseOfStaleHeadUpdateBranch(t *testing.T) {
 	}
 }
 
+func Test_CountChecks(t *testing.T) {
+	runs := []CheckRun{
+		passedRun("a"),
+		{Name: "b", Completed: false},
+		{Name: "c", Completed: true, Conclusion: "failure"},
+		{Name: "d", Completed: true, Conclusion: "neutral"},
+		{Name: "e", Completed: true, Conclusion: "timed_out"},
+	}
+	pending, failed := CountChecks(runs)
+	if pending != 1 || failed != 2 {
+		t.Fatalf("CountChecks = (pending %d, failed %d), want (1, 2)", pending, failed)
+	}
+}
+
 func Test_ApprovalsMet(t *testing.T) {
 	cases := []struct {
 		name   string

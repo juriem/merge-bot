@@ -120,6 +120,10 @@ func (m *Manager) List() []Item {
 	out := make([]Item, len(m.items))
 	for i, it := range m.items {
 		out[i] = *it
+		if it.MergedAt != nil { // don't share the pointer across the copy
+			t := *it.MergedAt
+			out[i].MergedAt = &t
+		}
 	}
 
 	return out
@@ -494,11 +498,13 @@ func (m *Manager) itemLogger(it *Item) func(format string, args ...any) {
 		msg := fmt.Sprintf(format, args...)
 		m.logf("%s", msg)
 
+		// Update the message in memory only (for the live UI); don't persist on
+		// every log line. The state is saved on phase transitions, and active
+		// items are re-queued on restart anyway, so a lost last message is fine.
 		m.mu.Lock()
 		if it.Phase == PhaseActive {
 			it.Message = msg
 			it.UpdatedAt = time.Now()
-			m.save()
 		}
 		m.mu.Unlock()
 	}

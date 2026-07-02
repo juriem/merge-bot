@@ -209,11 +209,14 @@ func (d *Dashboard) entryFor(ctx context.Context, pr PR) (Entry, bool) {
 	}
 
 	// blocked: distinguish a dead check failure (→ Failed) from something still
-	// workable (pending, behind, or a review gate → stays in My Open PR).
+	// workable (pending, behind, or a review gate → stays in My Open PR). If we
+	// can't determine behind or the checks, stay conservative and keep it in My
+	// Open PR rather than declaring it dead-failed.
 	behind, err := d.fetcher.BehindBy(ctx, d.owner, d.repo, base, head)
 	if err != nil {
 		d.logf("dashboard compare PR #%d: %v", pr.Number, err)
-		behind = 0
+		e.Category, e.Hint = CategoryMine, "blocked"
+		return e, true
 	}
 	runs, err := d.fetcher.CheckRuns(ctx, d.owner, d.repo, head)
 	if err != nil {
@@ -222,15 +225,7 @@ func (d *Dashboard) entryFor(ctx context.Context, pr PR) (Entry, bool) {
 		return e, true
 	}
 
-	var pending, failed int
-	for _, run := range runs {
-		switch {
-		case !run.Completed:
-			pending++
-		case !checkSucceeded(run.Conclusion):
-			failed++
-		}
-	}
+	pending, failed := merge.CountChecks(runs)
 
 	switch {
 	case pending > 0:
@@ -244,16 +239,6 @@ func (d *Dashboard) entryFor(ctx context.Context, pr PR) (Entry, bool) {
 	}
 
 	return e, true
-}
-
-// checkSucceeded mirrors the merge package: success/skipped/neutral count green.
-func checkSucceeded(conclusion string) bool {
-	switch conclusion {
-	case "success", "skipped", "neutral":
-		return true
-	default:
-		return false
-	}
 }
 
 // RefreshLoop refreshes once immediately, then on every interval tick until ctx
