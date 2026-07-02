@@ -329,7 +329,7 @@ function dashItems(category) {
 // No approval filter — on repos that dismiss stale reviews approvals reset on
 // every branch update, so a "fully approved only" list is empty most of the time.
 function myOpenItems() {
-  const rank = e => (addable(e.state) ? -1 : Math.max(0, e.required - e.approvals));
+  const rank = e => Math.max(0, e.required - e.approvals);
   return dashItems("mine").sort((a, b) => rank(a) - rank(b) || b.number - a.number);
 }
 
@@ -359,10 +359,12 @@ function failedItems() {
 }
 
 function mineRow(e) {
+  // The queue itself waits out pending checks and runs update-branch, so a PR
+  // is offerable as soon as the approvals are met — no need to wait for clean.
   const met = e.approvals >= e.required;
   const ratio = `<span class="badge ${met ? "ratio-ok" : "ratio-wait"}">${e.approvals}/${e.required}</span>`;
   const hint = (!addable(e.state) && e.hint) ? ` <span class="hint">${escapeHtml(e.hint)}</span>` : "";
-  const action = addable(e.state) ? `<button class="primary" data-add="${e.number}">Add to queue</button>` : "";
+  const action = met ? `<button class="primary" data-add="${e.number}">Add to queue</button>` : "";
   return `<tr>
     <td class="num"><a href="${prHref(e.number)}" target="_blank">#${e.number}</a></td>
     <td>${ratio}</td>
