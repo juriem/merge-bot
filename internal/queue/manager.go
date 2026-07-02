@@ -350,20 +350,23 @@ func (m *Manager) recheckLoop(ctx context.Context) {
 	}
 }
 
-// recheckParked re-queues parked PRs that are ready to make progress again: a
-// needs-approvals PR that now meets the approval gate, or a conflicts PR whose
-// conflict is gone. Both go back to the main queue, where the worker re-runs the
-// full gate (so a de-conflicted-but-under-approved PR lands in needs-approvals).
-// The API lookups run without the queue lock held.
+// recheckParked re-queues parked PRs that can make progress again — a
+// needs-approvals PR that now meets the approval gate, a conflicts PR whose
+// conflict is gone, or a failed PR whose blocking check recovered. They go back
+// to the main queue, where the worker re-runs the full gate. Only a PR that has
+// genuinely cleared is re-queued (no churn on still-broken ones). API lookups run
+// without the queue lock held.
 func (m *Manager) recheckParked(ctx context.Context) {
 	m.mu.Lock()
-	var needApprovals, conflicts []int
+	var needApprovals, conflicts, failed []int
 	for _, it := range m.items {
 		switch it.Phase {
 		case PhaseNeedsApprovals:
 			needApprovals = append(needApprovals, it.Number)
 		case PhaseConflicts:
 			conflicts = append(conflicts, it.Number)
+		case PhaseFailed:
+			failed = append(failed, it.Number)
 		}
 	}
 	m.mu.Unlock()
@@ -384,20 +387,38 @@ func (m *Manager) recheckParked(ctx context.Context) {
 		}
 	}
 
-	for _, number := range conflicts {
+	m.recheckByState(ctx, conflicts, PhaseConflicts, conflictResolved, "conflict resolved; back in queue")
+	m.recheckByState(ctx, failed, PhaseFailed, checksRecovered, "checks recovered; back in queue")
+}
+
+// recheckByState re-queues each parked PR whose current mergeable_state satisfies
+// ready() (i.e. the reason it was parked is gone).
+func (m *Manager) recheckByState(ctx context.Context, numbers []int, from Phase, ready func(string) bool, msg string) {
+	for _, number := range numbers {
 		if ctx.Err() != nil {
 			return
 		}
 
 		pr, err := m.client.GetPullRequest(ctx, m.cfg.Owner, m.cfg.Repo, number)
 		if err != nil {
-			m.logf("recheck conflict PR #%d: %v", number, err)
+			m.logf("recheck PR #%d: %v", number, err)
 			continue
 		}
 
-		if conflictResolved(pr.GetMergeableState()) {
-			m.requeueParked(number, PhaseConflicts, "conflict resolved; back in queue")
+		if ready(pr.GetMergeableState()) {
+			m.requeueParked(number, from, msg)
 		}
+	}
+}
+
+// checksRecovered reports whether a parked-failed PR is now mergeable again — the
+// state left "blocked" for a workable one. Still blocked/dirty/unknown → wait.
+func checksRecovered(state string) bool {
+	switch state {
+	case "clean", "unstable", "behind", "has_hooks":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -464,8 +485,12 @@ func (m *Manager) process(ctx context.Context, it *Item) {
 		it.Message = "merged in " + now.Sub(it.AddedAt).Round(time.Second).String()
 		it.Error = ""
 	case errors.Is(err, context.Canceled):
-		it.Phase = PhaseStopped
-		it.Message = "stopped"
+		// A user removal flips the phase to stopped before cancelling (handled by
+		// the first case), so reaching here means daemon shutdown — put the PR
+		// back in the queue so it resumes after restart instead of stranding in
+		// the stopped state.
+		it.Phase = PhaseQueued
+		it.Message = "interrupted; will resume"
 	case errors.Is(err, merge.ErrConflicts):
 		it.Phase = PhaseConflicts
 		it.Message = "merge conflicts"

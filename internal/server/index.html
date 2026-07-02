@@ -308,11 +308,14 @@ function dashItems(category) {
   return READY.filter(e => e.category === category && !shownElsewhere.has(e.number));
 }
 
-// My Open PR: my open PRs that are ready or in progress (not conflicting, not a
-// dead failure), sorted by approvals still needed (most first).
+// My Open PR: my open PRs that have enough approvals (ready or close to merge)
+// and aren't already in the queue. Under-approved ones live in the Generate list
+// (a reviewer nudge), not here. Mergeable (addable) ones sort to the top.
 function myOpenItems() {
-  const rank = e => Math.max(0, e.required - e.approvals);
-  return dashItems("mine").sort((a, b) => rank(b) - rank(a));
+  const rank = e => (addable(e.state) ? 1 : 0);
+  return dashItems("mine")
+    .filter(e => e.approvals >= e.required)
+    .sort((a, b) => rank(b) - rank(a) || b.number - a.number);
 }
 
 // Merge conflicts / Failed tabs merge the queue's own items with my open PRs the
@@ -371,14 +374,14 @@ function render(items) {
   const gen = document.getElementById("generate");
   const ref = document.getElementById("refresh-mine");
   clr.hidden = !((CURRENT_TAB in CLEARABLE) && byTab[CURRENT_TAB].length);
-  gen.hidden = !(CURRENT_TAB === "mine" && byTab.mine.length);
+  gen.hidden = !(CURRENT_TAB === "mine" && generatable().length);
   ref.hidden = CURRENT_TAB !== "mine";
   document.getElementById("toolbar").hidden = clr.hidden && gen.hidden && ref.hidden;
 
   const emptyMsg = {
     queue: "Queue is empty. Add a PR number above.",
     conflicts: "No pull requests with merge conflicts.",
-    mine: "No open pull requests of yours outside the queue.",
+    mine: "No approved pull requests of yours ready to queue.",
     failed: "No failed or stopped pull requests.",
     history: "No merged pull requests yet.",
   };
@@ -481,10 +484,10 @@ document.getElementById("refresh-mine").addEventListener("click", refreshMine);
 
 function needed(e) { return Math.max(0, e.required - e.approvals); }
 
-// The generated message is an approval nudge over My Open PR, which already
-// excludes conflicting PRs (they need a rebase, not approvals).
+// The generated message is a reviewer nudge, so it lists my open PRs that still
+// need approvals (those that don't yet meet the target, hence not in My Open PR).
 function generatable() {
-  return myOpenItems();
+  return dashItems("mine").filter(e => e.approvals < e.required);
 }
 
 function openGenerate() {

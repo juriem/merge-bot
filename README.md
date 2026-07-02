@@ -172,21 +172,22 @@ behind-base, checks, approvals) into the right tab:
 - **Merge conflicts** — dirty PRs (plus any the queue parked as conflicting).
 - **Failed** — a required check failed **and** the branch is up to date, so an
   update can't recover it (plus the queue's own failed/stopped items).
-- **My Open PR** — everything else: ready PRs, and in-progress ones (checks
-  running, behind base, or a review gate like `require_last_push_approval`) shown
-  with a hint.
+- **My Open PR** — my PRs with **enough approvals** that aren't in the queue —
+  the ones ready (or all but ready) to merge.
 
-Conflicts/Failed rows sourced from the dashboard clear automatically on the next
-refresh once the underlying state changes; queue-sourced ones re-check in the
-background. **Failed** and **History** have a **Clear All** button and a
-**retry** button (queue items only).
+**Auto-recheck:** parked queue items — conflicts, needs-approvals **and now
+failed** — are re-checked in the background on `--recheck-interval` and re-queued
+automatically once the block clears (a re-run turns green, a conflict is rebased),
+with no churn on still-broken ones. Dashboard-sourced rows clear on the next
+refresh. **Failed** and **History** also have a **Clear All** button and a
+**retry** button (queue items).
 
-**My Open PR** shows each PR's approval ratio (`1/2` against `--min-approvals`).
-Only a genuinely mergeable PR (`mergeable_state` `clean`/`unstable` — approved
-**and** required checks green) gets an **Add to queue** button; others show a
-hint (`behind base`, `checking…`, `needs re-approval`). A **Generate list**
-button builds a markdown list grouped by "approvals still needed" to paste as a
-reviewer nudge.
+**My Open PR** shows each PR's approval ratio (`X/Y` against `--min-approvals`).
+A genuinely mergeable one (`mergeable_state` `clean`/`unstable`) gets an **Add to
+queue** button; approved-but-not-yet-mergeable ones show a hint (`behind base`,
+`checking…`, `needs re-approval`). Under-approved PRs aren't listed here — the
+**Generate list** button builds a markdown nudge of them grouped by "approvals
+still needed" to paste for reviewers.
 
 The list is built by a background refresh that fetches PRs in parallel; while the
 first pass runs the tab shows a loading spinner. Because the queue keeps moving
@@ -274,10 +275,10 @@ flowchart TD
     S -->|"required check failed<br/>timeout / API error"| F["Failed"]
     C -. "background recheck" .-> Q
     N -. "background recheck" .-> Q
-    F -->|"retry"| Q
+    F -. "background recheck" .-> Q
 ```
 
-`conflicts` and `needs_approvals` are re-checked in the background and return to
-`queued` automatically once the conflict clears or the approvals arrive; `failed`
-is re-queued only via the **retry** button (or re-adding the PR). Removing a PR or
-shutting down leaves it `stopped`.
+`conflicts`, `needs_approvals` and `failed` are all re-checked in the background
+and return to `queued` automatically once the block clears (conflict rebased,
+approvals arrive, or the failing check recovers); **retry** forces it immediately.
+Removing a PR or shutting down leaves it `stopped`.

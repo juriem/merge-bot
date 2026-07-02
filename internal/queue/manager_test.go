@@ -150,6 +150,36 @@ func Test_recheckParked_LeavesStillConflictingPRParked(t *testing.T) {
 	}
 }
 
+func Test_recheckParked_RequeuesRecoveredFailed(t *testing.T) {
+	// Arrange: a failed PR whose blocking check recovered (now clean).
+	m := New(statedGitHub{state: "clean"}, Config{Owner: "o", Repo: "r"}, "", func(string, ...any) {})
+	it := &Item{Number: 1, Phase: PhaseFailed}
+	m.items = []*Item{it}
+
+	// Act
+	m.recheckParked(context.Background())
+
+	// Assert
+	if it.Phase != PhaseQueued {
+		t.Fatalf("expected phase %q, got %q", PhaseQueued, it.Phase)
+	}
+}
+
+func Test_recheckParked_LeavesStillFailedPRParked(t *testing.T) {
+	// Arrange: still blocked (check still failing) → stays failed, no churn.
+	m := New(statedGitHub{state: "blocked"}, Config{Owner: "o", Repo: "r"}, "", func(string, ...any) {})
+	it := &Item{Number: 1, Phase: PhaseFailed}
+	m.items = []*Item{it}
+
+	// Act
+	m.recheckParked(context.Background())
+
+	// Assert
+	if it.Phase != PhaseFailed {
+		t.Fatalf("expected phase %q, got %q", PhaseFailed, it.Phase)
+	}
+}
+
 func Test_Requeue_MovesParkedPRBackToQueuedPreservingTiming(t *testing.T) {
 	// Arrange
 	added := time.Now().Add(-time.Hour)
@@ -183,6 +213,55 @@ func Test_Requeue_IgnoresNonParkedPR(t *testing.T) {
 	}
 	if m.Requeue(999) {
 		t.Fatal("expected Requeue to report false for an unknown PR")
+	}
+}
+
+// blockingGitHub parks every GetPullRequest until its ctx is cancelled, so a
+// test can cancel mid-flight and observe the resulting phase.
+type blockingGitHub struct{ merge.GitHub }
+
+func (blockingGitHub) GetPullRequest(ctx context.Context, _, _ string, _ int) (*github.PullRequest, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func Test_process_RequeuesOnShutdownCancel(t *testing.T) {
+	// Arrange: the daemon shuts down (parent ctx cancelled) while a PR is active.
+	m := New(blockingGitHub{}, Config{Owner: "o", Repo: "r", Interval: time.Millisecond, Timeout: time.Minute}, "", func(string, ...any) {})
+	it := &Item{Number: 1, Phase: PhaseActive, AddedAt: time.Now()}
+	m.items = []*Item{it}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { m.process(ctx, it); close(done) }()
+	cancel()
+	<-done
+
+	// Assert: back to queued so it resumes after restart, not stranded stopped.
+	if it.Phase != PhaseQueued {
+		t.Fatalf("expected phase %q after shutdown, got %q", PhaseQueued, it.Phase)
+	}
+}
+
+func Test_process_KeepsStoppedOnUserRemove(t *testing.T) {
+	// Arrange: the user removes the PR while active — Remove flips the phase to
+	// stopped and cancels; the phase must stay stopped.
+	m := New(blockingGitHub{}, Config{Owner: "o", Repo: "r", Interval: time.Millisecond, Timeout: time.Minute}, "", func(string, ...any) {})
+	it := &Item{Number: 1, Phase: PhaseQueued, AddedAt: time.Now()}
+	m.items = []*Item{it}
+
+	claimed, procCtx := m.claim(context.Background())
+	if claimed == nil {
+		t.Fatal("expected to claim the queued item")
+	}
+	done := make(chan struct{})
+	go func() { m.process(procCtx, claimed); close(done) }()
+	m.Remove(1)
+	<-done
+
+	// Assert
+	if it.Phase != PhaseStopped {
+		t.Fatalf("expected phase %q after user remove, got %q", PhaseStopped, it.Phase)
 	}
 }
 
