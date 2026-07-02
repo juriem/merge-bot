@@ -311,11 +311,13 @@ function dashItems(category) {
 // My Open PR: my open PRs that have enough approvals (ready or close to merge)
 // and aren't already in the queue. Under-approved ones live in the Generate list
 // (a reviewer nudge), not here. Mergeable (addable) ones sort to the top.
+// All my open PRs (not shown in another tab): merge-ready ones first (Add
+// button), then the rest closest-to-ready first with their ratio and hint.
+// No approval filter — on repos that dismiss stale reviews approvals reset on
+// every branch update, so a "fully approved only" list is empty most of the time.
 function myOpenItems() {
-  const rank = e => (addable(e.state) ? 1 : 0);
-  return dashItems("mine")
-    .filter(e => e.approvals >= e.required)
-    .sort((a, b) => rank(b) - rank(a) || b.number - a.number);
+  const rank = e => (addable(e.state) ? -1 : Math.max(0, e.required - e.approvals));
+  return dashItems("mine").sort((a, b) => rank(a) - rank(b) || b.number - a.number);
 }
 
 // Merge conflicts / Failed tabs merge the queue's own items with my open PRs the
