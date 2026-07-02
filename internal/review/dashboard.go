@@ -18,7 +18,7 @@ type PR struct {
 
 // Category buckets a dashboard PR into a UI tab.
 const (
-	CategoryMine     = "mine"     // ready or in-progress — shown in My Open PR
+	CategoryMine     = "mine"     // ready or in-progress — shown in My PRs
 	CategoryConflict = "conflict" // merge conflict — shown in Merge conflicts
 	CategoryFailed   = "failed"   // failed check that can't recover — shown in Failed
 )
@@ -208,10 +208,24 @@ func (d *Dashboard) entryFor(ctx context.Context, pr PR) (Entry, bool) {
 		return e, true
 	}
 
-	// blocked: distinguish a dead check failure (→ Failed) from something still
-	// workable (pending, behind, or a review gate → stays in My Open PR). If we
-	// can't determine behind or the checks, stay conservative and keep it in My
-	// Open PR rather than declaring it dead-failed.
+	// blocked with the review side unsatisfied: the block is explained by the
+	// missing approvals, so it belongs in My PRs (collecting approvals) — a red
+	// non-required check must not send it to Failed. The required-check list is
+	// hidden behind rulesets, so this ordering is what keeps failed-check blame
+	// honest: checks are only blamed once the PR is fully approved.
+	if status.ReviewDecision == "CHANGES_REQUESTED" {
+		e.Category, e.Hint = CategoryMine, "changes requested"
+		return e, true
+	}
+	if e.Approvals < d.minApprovals || status.ReviewDecision == "REVIEW_REQUIRED" {
+		e.Category, e.Hint = CategoryMine, "needs approvals"
+		return e, true
+	}
+
+	// blocked while fully approved: distinguish a dead check failure (→ Failed)
+	// from something still workable (pending, behind, or a re-approval gate →
+	// stays in My PRs). If we can't determine behind or the checks, stay
+	// conservative and keep it in My PRs rather than declaring it dead-failed.
 	behind, err := d.fetcher.BehindBy(ctx, d.owner, d.repo, base, head)
 	if err != nil {
 		d.logf("dashboard compare PR #%d: %v", pr.Number, err)

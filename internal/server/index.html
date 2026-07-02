@@ -142,8 +142,8 @@
 
     <nav class="tabs">
       <button class="tab active" data-tab="queue">Merge Queue <span class="count" id="count-queue"></span></button>
+      <button class="tab" data-tab="mine">My PRs <span class="count" id="count-mine"></span></button>
       <button class="tab" data-tab="conflicts">Merge conflicts <span class="count" id="count-conflicts"></span></button>
-      <button class="tab" data-tab="mine">My Open PR <span class="count" id="count-mine"></span></button>
       <button class="tab" data-tab="failed">Failed <span class="count" id="count-failed"></span></button>
       <button class="tab" data-tab="history">History <span class="count" id="count-history"></span></button>
     </nav>
@@ -184,7 +184,9 @@ let READY_LOADED = false;
 const QUEUE_PHASES = ["queued", "active"];
 const FAILED_PHASES = ["failed", "stopped"];
 const HISTORY_PHASES = ["merged"];
-const CLEARABLE = { failed: FAILED_PHASES, history: HISTORY_PHASES };
+// Merge conflicts and Failed are informational (driven by live PR state), so
+// only the History log is manually clearable.
+const CLEARABLE = { history: HISTORY_PHASES };
 
 async function api(path, opts) {
   const res = await fetch(path, opts);
@@ -297,18 +299,29 @@ function addable(state) { return state === "clean" || state === "unstable"; }
 // Phases that already have their own tab. A PR the queue is tracking in one of
 // these is shown there, so it's excluded from the dashboard tabs to avoid
 // duplicates. `needs_approvals` has no tab of its own, so those PRs are NOT
-// excluded — they surface via their dashboard row (in My Open PR).
-const TABBED_PHASES = ["queued", "active", "conflicts", "failed", "stopped", "merged"];
+// excluded — they surface via their dashboard row (in My PRs).
+// Only the live queue process (Merge Queue) and History pin a PR to their tab.
+// Terminal queue records (failed / stopped / conflicts / needs_approvals) do NOT:
+// for my own PRs the live dashboard triage wins, so a stale "failed" record can't
+// keep a recovered PR out of My PRs.
+const PINNED_PHASES = ["queued", "active", "merged"];
 
-// dashItems returns the dashboard entries (my open PRs) the backend triaged into
-// the given category, that aren't already shown in another tab.
-function dashItems(category) {
-  const shownElsewhere = new Set(
-    LAST_ITEMS.filter(it => TABBED_PHASES.includes(it.phase)).map(it => it.number));
-  return READY.filter(e => e.category === category && !shownElsewhere.has(e.number));
+// liveCategory returns the dashboard's current category for one of my PRs, or
+// null when the PR is not mine / not known to the dashboard.
+function liveCategory(n) {
+  const e = READY.find(e => e.number === n);
+  return e ? e.category : null;
 }
 
-// My Open PR: my open PRs that have enough approvals (ready or close to merge)
+// dashItems returns the dashboard entries (my open PRs) the backend triaged into
+// the given category, that aren't pinned to the Merge Queue or History tabs.
+function dashItems(category) {
+  const pinned = new Set(
+    LAST_ITEMS.filter(it => PINNED_PHASES.includes(it.phase)).map(it => it.number));
+  return READY.filter(e => e.category === category && !pinned.has(e.number));
+}
+
+// My PRs: my open PRs that have enough approvals (ready or close to merge)
 // and aren't already in the queue. Under-approved ones live in the Generate list
 // (a reviewer nudge), not here. Mergeable (addable) ones sort to the top.
 // All my open PRs (not shown in another tab): merge-ready ones first (Add
@@ -324,7 +337,11 @@ function myOpenItems() {
 // dashboard triaged into the same bucket, deduped (a queued one keeps its actions).
 function mergedItems(queuePhases, category, dashMessage) {
   const byNum = new Map();
-  LAST_ITEMS.filter(it => queuePhases.includes(it.phase)).forEach(it => byNum.set(it.number, it));
+  // Queue records stay in this tab only while the live triage agrees (or the PR
+  // is not mine, so there is no live data). A recovered PR moves to its live tab.
+  LAST_ITEMS.filter(it => queuePhases.includes(it.phase))
+    .filter(it => (liveCategory(it.number) ?? category) === category)
+    .forEach(it => byNum.set(it.number, it));
   dashItems(category).forEach(e => {
     if (!byNum.has(e.number)) {
       byNum.set(e.number, { number: e.number, phase: queuePhases[0], message: e.title || "", error: dashMessage(e), _review: true });
@@ -487,7 +504,7 @@ document.getElementById("refresh-mine").addEventListener("click", refreshMine);
 function needed(e) { return Math.max(0, e.required - e.approvals); }
 
 // The generated message is a reviewer nudge, so it lists my open PRs that still
-// need approvals (those that don't yet meet the target, hence not in My Open PR).
+// need approvals (those that don't yet meet the target, hence not in My PRs).
 function generatable() {
   return dashItems("mine").filter(e => e.approvals < e.required);
 }

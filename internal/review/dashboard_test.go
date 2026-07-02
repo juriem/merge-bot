@@ -112,20 +112,25 @@ func Test_Refresh_CategorisesBlockedPRs(t *testing.T) {
 	// Arrange
 	f := fakeFetcher{
 		user: "me",
-		prs:  []PR{{Number: 1}, {Number: 2}, {Number: 3}, {Number: 4}},
+		prs:  []PR{{Number: 1}, {Number: 2}, {Number: 3}, {Number: 4}, {Number: 5}},
 		states: map[int]string{
-			1: "blocked", // failed check, up to date → Failed
+			1: "blocked", // failed check, approved, up to date → Failed
 			2: "blocked", // failed check but behind → still Mine (can recover)
 			3: "blocked", // check still running → Mine (checking)
 			4: "clean",   // ready → Mine
+			5: "blocked", // failed (non-required) check but under-approved → Mine (needs approvals)
 		},
 		behind: map[int]int{2: 3},
 		runs: map[int][]merge.CheckRun{
 			1: {{Name: "ci", Completed: true, Conclusion: "failure"}},
 			2: {{Name: "ci", Completed: true, Conclusion: "failure"}},
 			3: {{Name: "ci", Completed: false}},
+			5: {{Name: "pre-commit", Completed: true, Conclusion: "failure"}},
 		},
-		statuses: map[int]merge.ReviewStatus{1: {Approvals: 2}, 2: {Approvals: 2}, 3: {Approvals: 2}, 4: {Approvals: 2}},
+		statuses: map[int]merge.ReviewStatus{
+			1: {Approvals: 2}, 2: {Approvals: 2}, 3: {Approvals: 2}, 4: {Approvals: 2},
+			5: {Approvals: 0, ReviewDecision: "REVIEW_REQUIRED"},
+		},
 	}
 	d := NewDashboard(f, "o", "r", 2, "", func(string, ...any) {})
 
@@ -139,7 +144,7 @@ func Test_Refresh_CategorisesBlockedPRs(t *testing.T) {
 	for _, e := range d.List() {
 		cat[e.Number] = e.Category
 	}
-	want := map[int]string{1: CategoryFailed, 2: CategoryMine, 3: CategoryMine, 4: CategoryMine}
+	want := map[int]string{1: CategoryFailed, 2: CategoryMine, 3: CategoryMine, 4: CategoryMine, 5: CategoryMine}
 	for n, w := range want {
 		if cat[n] != w {
 			t.Fatalf("PR #%d category = %q, want %q", n, cat[n], w)

@@ -190,7 +190,7 @@ func runServe(args []string) error {
 	statePath := fs.String("state", envOr("MERGEBOT_STATE", "mergebot-queue.json"), "path to the queue state file")
 	recheck := fs.Duration("recheck-interval", envDurationOr("MERGEBOT_RECHECK_INTERVAL", 5*time.Minute), "how often to re-check parked (needs-approvals) PRs; 0 disables")
 	concurrency := fs.Int("concurrency", envIntOr("MERGEBOT_CONCURRENCY", 1), "how many PRs to drive in parallel")
-	reviewAuthor := fs.String("review-author", envOr("MERGEBOT_REVIEW_AUTHOR", ""), "GitHub login for the My Open PR dashboard (default: token owner)")
+	reviewAuthor := fs.String("review-author", envOr("MERGEBOT_REVIEW_AUTHOR", ""), "GitHub login for the My PRs dashboard (default: token owner)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

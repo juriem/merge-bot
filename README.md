@@ -17,10 +17,10 @@ The merge queue driving PRs to merged, with live stats in the header:
 
 ![Merge Queue](docs/screenshots/merge-queue.svg)
 
-**My Open PR** — your open pull requests with approval ratios and one-click
+**My PRs** — your open pull requests with approval ratios and one-click
 enqueue for the merge-ready ones:
 
-![My Open PR](docs/screenshots/my-open-pr.svg)
+![My PRs](docs/screenshots/my-open-pr.svg)
 
 ## How readiness is decided
 
@@ -83,7 +83,7 @@ Requires Go 1.26+.
 ## Authentication
 
 mergebot reads a GitHub token from `GITHUB_TOKEN`. The token owner also defines
-whose PRs show up under **My Open PR** (override with `--review-author`), so
+whose PRs show up under **My PRs** (override with `--review-author`), so
 prefer your own account's token rather than a shared bot account.
 
 ### Option A — GitHub CLI (quickest)
@@ -159,7 +159,7 @@ mergebot serve --repo owner/name --addr 127.0.0.1:9000 --state ~/.mergebot.json
 Open the address in a browser: enter a PR number to enqueue it, watch the queue
 status, and remove items. The page polls the API every few seconds. Five tabs:
 **Merge Queue** (queued + active), **Merge conflicts** (parked for a manual
-rebase), **My Open PR** (my open PRs and their approval ratios), **Failed**
+rebase), **My PRs** (my open PRs and their approval ratios), **Failed**
 (failed or stopped) and **History** (merged only, newest first). The **Time** column
 shows the total wall-clock each PR has spent in the queue — live while it is in
 flight, frozen once it finishes. Each merged PR also reports it in its message
@@ -172,17 +172,22 @@ behind-base, checks, approvals) into the right tab:
 - **Merge conflicts** — dirty PRs (plus any the queue parked as conflicting).
 - **Failed** — a required check failed **and** the branch is up to date, so an
   update can't recover it (plus the queue's own failed/stopped items).
-- **My Open PR** — my PRs with **enough approvals** that aren't in the queue —
-  the ones ready (or all but ready) to merge.
+- **My PRs** — the rest of my open PRs: merge-ready ones first (with an
+  **Add to queue** button), then the ones still collecting approvals or checks.
 
-**Auto-recheck:** parked queue items — conflicts, needs-approvals **and now
-failed** — are re-checked in the background on `--recheck-interval` and re-queued
-automatically once the block clears (a re-run turns green, a conflict is rebased),
-with no churn on still-broken ones. Dashboard-sourced rows clear on the next
-refresh. **Failed** and **History** also have a **Clear All** button and a
-**retry** button (queue items).
+Live state wins: only the **Merge Queue** (queued/active) and **History**
+(merged) pin a PR to their tab. A stale queue record (failed, stopped, conflict)
+hides as soon as the live triage disagrees — a recovered PR moves back to
+**My PRs** on the next refresh. **Merge conflicts** and **Failed** are
+therefore informational; only **History** has a **Clear All** button. Queue-owned
+failed rows keep a **retry** button.
 
-**My Open PR** shows each PR's approval ratio (`X/Y` against `--min-approvals`).
+**Auto-recheck:** parked queue items — conflicts, needs-approvals and failed —
+are re-checked in the background on `--recheck-interval` and re-queued
+automatically once the block clears (a re-run turns green, a conflict is
+rebased), with no churn on still-broken ones.
+
+**My PRs** shows each PR's approval ratio (`X/Y` against `--min-approvals`).
 A genuinely mergeable one (`mergeable_state` `clean`/`unstable`) gets an **Add to
 queue** button; approved-but-not-yet-mergeable ones show a hint (`behind base`,
 `checking…`, `needs re-approval`). Under-approved PRs aren't listed here — the
@@ -217,7 +222,7 @@ The UI is served on `127.0.0.1` only and has no authentication; run it locally.
 |--------|---------------------------------|-------------------|----------------------------------|
 | GET    | `/api/items`                    | —                 | list the queue                   |
 | GET    | `/api/ready`                    | —                 | my open PRs awaiting approvals   |
-| POST   | `/api/ready/refresh`            | —                 | rebuild the My Open PR dashboard now |
+| POST   | `/api/ready/refresh`            | —                 | rebuild the My PRs dashboard now |
 | POST   | `/api/items`                    | `{"number": 123}` | enqueue (or re-queue / retry) a PR |
 | DELETE | `/api/items/{number}`           | —                 | stop / remove a PR               |
 | POST   | `/api/items/{number}/requeue`   | —                 | re-check a parked PR now         |
@@ -245,7 +250,7 @@ Every flag has an environment-variable fallback. Precedence:
 | `--state`         | `MERGEBOT_STATE`          | `mergebot-queue.json` | `serve` only                  |
 | `--recheck-interval` | `MERGEBOT_RECHECK_INTERVAL` | `5m`             | `serve` only; re-check parked PRs; `0` disables |
 | `--concurrency`   | `MERGEBOT_CONCURRENCY`    | `1`                   | `serve` only; PRs driven in parallel |
-| `--review-author` | `MERGEBOT_REVIEW_AUTHOR`  | token owner           | `serve` only; GitHub login for the My Open PR dashboard |
+| `--review-author` | `MERGEBOT_REVIEW_AUTHOR`  | token owner           | `serve` only; GitHub login for the My PRs dashboard |
 
 ## Releasing
 
@@ -265,7 +270,7 @@ git push origin v1.0.0
 ```mermaid
 flowchart TD
     A(["Add PR number"]) --> Q["Merge Queue<br/>(queued → active)"]
-    D["My Open PR dashboard"] -->|"Add to queue"| Q
+    D["My PRs dashboard"] -->|"Add to queue"| Q
     Q --> S{"mergeable_state?"}
     S -->|"clean / required checks green<br/>+ approvals"| M(["Merged"])
     S -->|"behind"| U["Update branch"]
