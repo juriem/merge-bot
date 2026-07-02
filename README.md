@@ -17,8 +17,8 @@ The merge queue driving PRs to merged, with live stats in the header:
 
 ![Merge Queue](docs/screenshots/merge-queue.svg)
 
-**My Open PR** — your open pull requests with approval ratios, conflict flags and
-one-click enqueue:
+**My Open PR** — your open pull requests with approval ratios and one-click
+enqueue for the merge-ready ones:
 
 ![My Open PR](docs/screenshots/my-open-pr.svg)
 
@@ -166,21 +166,24 @@ flight, frozen once it finishes. Each merged PR also reports it in its message
 (`merged in …`), and the History tab shows aggregate stats (count, average,
 fastest, slowest time to merge).
 
-PRs the worker parks — **Merge conflicts** and under-approved (`needs_approvals`)
-ones — are re-checked automatically in the background (`--recheck-interval`) and
-re-queued once ready. Each **Merge conflicts** row also has a **recheck** button
-to send that PR back immediately. **Failed** and **History** each have a **Clear
-All** button; a failed or stopped PR has a **retry** button that re-queues it.
+**Merge conflicts** collects PRs the queue parked as conflicting **and** my open
+PRs GitHub reports as dirty (from the dashboard). Both are re-checked
+automatically — queue ones in the background, dashboard ones on the dashboard
+refresh — and drop off once the conflict is resolved. Under-approved
+(`needs_approvals`) PRs are likewise re-checked and re-queued once ready. **Failed**
+and **History** each have a **Clear All** button; a failed or stopped PR has a
+**retry** button that re-queues it.
 
 **My Open PR** is a review dashboard: on the same `--recheck-interval`, mergebot
 lists the token owner's own open, ready-for-review PRs in the repo (excluding any
-already in the merge queue). Each row shows either its approval ratio (`1/2`
-against `--min-approvals`) or a **Merge conflict** badge (in which case the ratio
-is irrelevant and hidden). A PR that is fully approved and conflict-free gets an
-**Add to queue** button. A **Generate list** button opens a dialog that builds a
-markdown list grouped by "approvals still needed" (conflicts excluded); tick/
-untick PRs to include only the ones you want, then copy it (handy for a nudge in
-chat).
+already in the merge queue, and conflicting ones which go to **Merge conflicts**).
+Each row shows its approval ratio (`1/2` against `--min-approvals`). A PR that is
+actually mergeable — GitHub `mergeable_state` `clean`/`unstable`, i.e. approved
+**and** required checks green — gets an **Add to queue** button; a PR held by
+failing/pending checks or another gate shows a hint (e.g. `checks not green`)
+instead. A **Generate list** button opens a dialog that builds a markdown list
+grouped by "approvals still needed"; tick/untick PRs to include only the ones you
+want, then copy it (handy for a nudge in chat).
 
 The list is built by a background refresh that fetches PRs in parallel; while the
 first pass runs the tab shows a loading spinner. Because the queue keeps moving

@@ -16,15 +16,16 @@ type PR struct {
 	Title  string
 }
 
-// Entry is one dashboard row: one of my open PRs with its approval ratio, or a
-// flag that it is blocked by a merge conflict (in which case Approvals/Required
-// are not meaningful).
+// Entry is one dashboard row: one of my open PRs with its approval ratio and its
+// GitHub mergeable_state (clean / unstable / blocked / behind / dirty / unknown),
+// which the UI uses to tell a merge-ready PR from a conflicting or check-blocked
+// one. For a dirty (conflicting) PR the approval fields are not filled in.
 type Entry struct {
 	Number    int    `json:"number"`
 	Title     string `json:"title"`
 	Approvals int    `json:"approvals"`
 	Required  int    `json:"required"`
-	Conflict  bool   `json:"conflict"`
+	State     string `json:"state"`
 }
 
 // Fetcher is the GitHub subset the dashboard needs.
@@ -166,7 +167,7 @@ func (d *Dashboard) entryFor(ctx context.Context, pr PR) (Entry, bool) {
 
 	// A conflicting PR needs a rebase, not approvals; skip the review lookup.
 	if isConflict(state) {
-		return Entry{Number: pr.Number, Title: pr.Title, Required: d.minApprovals, Conflict: true}, true
+		return Entry{Number: pr.Number, Title: pr.Title, Required: d.minApprovals, State: state}, true
 	}
 
 	status, err := d.fetcher.ReviewStatus(ctx, d.owner, d.repo, pr.Number)
@@ -180,6 +181,7 @@ func (d *Dashboard) entryFor(ctx context.Context, pr PR) (Entry, bool) {
 		Title:     pr.Title,
 		Approvals: status.Approvals,
 		Required:  d.minApprovals,
+		State:     state,
 	}, true
 }
 

@@ -65,7 +65,6 @@ type GitHub interface {
 	ReviewStatus(ctx context.Context, owner, repo string, number int) (ReviewStatus, error)
 	RequiredChecks(ctx context.Context, owner, repo, branch string) ([]string, error)
 	CheckRuns(ctx context.Context, owner, repo, ref string) ([]CheckRun, error)
-	BehindBy(ctx context.Context, owner, repo, base, head string) (int, error)
 }
 
 // Runner repeatedly inspects a pull request and brings it to a merged state.
@@ -187,14 +186,15 @@ func (r Runner) tryMerge(ctx context.Context) (bool, error) {
 }
 
 // handleBlocked deals with a PR GitHub reports as "blocked" (a required gate is
-// unmet). The bot cannot merge it, so instead of waiting out the timeout it
-// reacts based on the checks — this works even when the required-check list is
-// hidden (rulesets), which is why it inspects check runs directly:
-//   - under-approved              → park for approvals;
-//   - some check still running    → wait (it may unblock);
-//   - a check has failed          → a required check failed, decline;
+// unmet). The bot cannot merge it, so it reacts by inspecting the checks (this
+// works even when the required-check list is hidden behind rulesets):
+//   - under-approved            → park for approvals;
+//   - a check has failed        → park in the Blocked lane (a failed check keeps
+//     the PR blocked no matter how many others are still pending); the background
+//     recheck re-queues it once the block clears (check re-run / branch updated);
+//   - no failures, some pending → wait for them to finish;
 //   - all green but still blocked → held by a gate the bot can't satisfy
-//     (e.g. require_last_push_approval), surface instead of spinning.
+//     (e.g. require_last_push_approval) → park; recheck re-queues when it clears.
 func (r Runner) handleBlocked(ctx context.Context, pr *github.PullRequest) (bool, error) {
 	if !r.AllowUnresolved {
 		if _, _, err := r.reviewGate(ctx); errors.Is(err, ErrInsufficientApprovals) {
@@ -220,24 +220,12 @@ func (r Runner) handleBlocked(ctx context.Context, pr *github.PullRequest) (bool
 	}
 
 	switch {
+	case failed > 0:
+		r.logBlockers(ctx, head)
+		return false, fmt.Errorf("PR #%d blocked by %d failed check(s): %w", r.Number, failed, ErrRequiredCheckFailed)
 	case pending > 0:
 		r.Logf("blocked: %d check(s) still running; waiting", pending)
 		return false, nil
-	case failed > 0:
-		// A failed required check is often stale: if the branch is behind base,
-		// update it so CI re-runs and a transient failure recovers. Only decline
-		// once the branch is current and the check still fails.
-		behind, err := r.Client.BehindBy(ctx, r.Owner, r.Repo, pr.GetBase().GetRef(), head)
-		if err != nil {
-			r.Logf("blocked; could not compare with base: %v; will re-check", err)
-			return false, nil
-		}
-		if behind > 0 {
-			r.Logf("blocked by %d failed check(s); branch is %d commit(s) behind base — updating to re-run CI", failed, behind)
-			return false, r.update(ctx, head)
-		}
-		r.logBlockers(ctx, head)
-		return false, fmt.Errorf("PR #%d blocked by %d failed required check(s) on an up-to-date branch: %w", r.Number, failed, ErrRequiredCheckFailed)
 	default:
 		return false, fmt.Errorf("PR #%d is blocked by branch protection and cannot be merged automatically: %w", r.Number, ErrBlocked)
 	}

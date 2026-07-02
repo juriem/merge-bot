@@ -83,6 +83,7 @@
   .num a { font-weight: 600; text-decoration: none; color: var(--accent); }
   .num a:hover { text-decoration: underline; }
   .msg { color: var(--text); font-size: .9rem; }
+  .hint { color: var(--muted); font-size: .82rem; }
   .err { color: var(--failed); font-size: .82rem; margin-top: .2rem; }
   time { color: var(--muted); font-size: .85rem; font-variant-numeric: tabular-nums; }
   .empty { color: var(--muted); text-align: center; padding: 2.4rem 1rem; }
@@ -181,7 +182,6 @@ let LAST_ITEMS = [];
 let READY = [];
 let READY_LOADED = false;
 const QUEUE_PHASES = ["queued", "active"];
-const CONFLICT_PHASES = ["conflicts"];
 const FAILED_PHASES = ["failed", "stopped"];
 const HISTORY_PHASES = ["merged"];
 const CLEARABLE = { failed: FAILED_PHASES, history: HISTORY_PHASES };
@@ -281,30 +281,53 @@ function actionCell(it) {
     return `<button class="remove" data-remove="${it.number}">remove</button>`;
   if (FAILED_PHASES.includes(it.phase))
     return `<button class="retry" data-retry="${it.number}">retry</button>`;
-  if (it.phase === "conflicts")
+  // Only queue-parked conflicts can be re-checked via the queue; dashboard-only
+  // conflicts are refreshed automatically by the background dashboard refresh.
+  if (it.phase === "conflicts" && !it._review)
     return `<button class="retry" data-requeue="${it.number}">recheck</button>`;
   return "";
 }
 
-// My Open PR: my open PRs from the review dashboard, excluding any that are
-// already in the merge queue (queued/active). Conflicts sort first, then the
-// PRs furthest from the approval target.
+// A PR is safe to add only when GitHub reports it mergeable — required checks
+// green and approved (clean), or mergeable with only non-required checks red
+// (unstable). blocked/behind/dirty/unknown are not offered.
+function addable(state) { return state === "clean" || state === "unstable"; }
+
+const STATE_HINTS = { blocked: "checks not green", behind: "behind base", unknown: "checking…", "": "checking…" };
+
+// My Open PR: my open, non-conflicting PRs not already in the queue. Conflicting
+// ones are shown in the Merge conflicts tab instead. Sorted by approvals still
+// needed (most first).
 function myOpenItems() {
   const inQueue = new Set(LAST_ITEMS.filter(it => QUEUE_PHASES.includes(it.phase)).map(it => it.number));
-  const rank = e => e.conflict ? Infinity : Math.max(0, e.required - e.approvals);
-  return READY.filter(e => !inQueue.has(e.number)).sort((a, b) => rank(b) - rank(a));
+  const rank = e => Math.max(0, e.required - e.approvals);
+  return READY
+    .filter(e => e.state !== "dirty" && !inQueue.has(e.number))
+    .sort((a, b) => rank(b) - rank(a));
+}
+
+// Merge conflicts tab: PRs the queue parked as conflicting plus my open PRs
+// GitHub reports as dirty, deduped (a queued one keeps its queue actions).
+function conflictItems() {
+  const byNum = new Map();
+  LAST_ITEMS.filter(it => it.phase === "conflicts").forEach(it => byNum.set(it.number, it));
+  READY.filter(e => e.state === "dirty").forEach(e => {
+    if (!byNum.has(e.number)) {
+      byNum.set(e.number, { number: e.number, phase: "conflicts", message: e.title || "merge conflict", _review: true });
+    }
+  });
+  return [...byNum.values()];
 }
 
 function mineRow(e) {
-  const ready = !e.conflict && e.approvals >= e.required;
-  const status = e.conflict
-    ? `<span class="badge conflicts">Merge conflict</span>`
-    : `<span class="badge ${ready ? "ratio-ok" : "ratio-wait"}">${e.approvals}/${e.required}</span>`;
-  const action = ready ? `<button class="primary" data-add="${e.number}">Add to queue</button>` : "";
+  const met = e.approvals >= e.required;
+  const ratio = `<span class="badge ${met ? "ratio-ok" : "ratio-wait"}">${e.approvals}/${e.required}</span>`;
+  const hint = addable(e.state) ? "" : ` <span class="hint">${escapeHtml(STATE_HINTS[e.state] || e.state)}</span>`;
+  const action = addable(e.state) ? `<button class="primary" data-add="${e.number}">Add to queue</button>` : "";
   return `<tr>
     <td class="num"><a href="${prHref(e.number)}" target="_blank">#${e.number}</a></td>
-    <td>${status}</td>
-    <td class="msg">${escapeHtml(e.title || "")}</td>
+    <td>${ratio}</td>
+    <td class="msg">${escapeHtml(e.title || "")}${hint}</td>
     <td></td>
     <td>${action}</td>
   </tr>`;
@@ -314,7 +337,7 @@ function render(items) {
   LAST_ITEMS = items;
   const byTab = {
     queue: items.filter(it => QUEUE_PHASES.includes(it.phase)),
-    conflicts: items.filter(it => CONFLICT_PHASES.includes(it.phase)).sort(RECENT_FIRST),
+    conflicts: conflictItems(),
     mine: myOpenItems(),
     failed: items.filter(it => FAILED_PHASES.includes(it.phase)).sort(RECENT_FIRST),
     history: items.filter(it => HISTORY_PHASES.includes(it.phase)).sort(RECENT_FIRST),
@@ -441,10 +464,10 @@ document.getElementById("refresh-mine").addEventListener("click", refreshMine);
 
 function needed(e) { return Math.max(0, e.required - e.approvals); }
 
-// The generated message is an approval nudge, so PRs blocked by a merge conflict
-// (which need a rebase, not approvals) are left out entirely.
+// The generated message is an approval nudge over My Open PR, which already
+// excludes conflicting PRs (they need a rebase, not approvals).
 function generatable() {
-  return myOpenItems().filter(e => !e.conflict);
+  return myOpenItems();
 }
 
 function openGenerate() {

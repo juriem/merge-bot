@@ -54,8 +54,8 @@
   <!-- rows -->
   <g font-size="15">
     <text x="52" y="239" font-weight="600" fill="#2563eb">#7278</text>
-    <rect x="170" y="223" width="116" height="22" rx="11" fill="#f7ece4"/><text x="228" y="239" text-anchor="middle" font-size="12.5" font-weight="600" fill="#bc4c00">Merge conflict</text>
-    <text x="372" y="239" font-size="14" fill="#1f2328">Drop the suite ctx field in common test helpers</text>
+    <rect x="170" y="223" width="46" height="22" rx="11" fill="#e5f1ea"/><text x="193" y="239" text-anchor="middle" font-size="12.5" font-weight="600" fill="#1a7f37">2/2</text>
+    <text x="372" y="239" font-size="14" fill="#1f2328">Drop the suite ctx field in common test helpers <tspan fill="#656d76" font-size="12.5">— checks not green</tspan></text>
 
     <line x1="32" y1="257" x2="968" y2="257" stroke="#eef1f4"/>
     <text x="52" y="286" font-weight="600" fill="#2563eb">#7349</text>

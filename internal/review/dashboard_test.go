@@ -58,7 +58,7 @@ func Test_Refresh_ReportsApprovalRatio(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(got))
 	}
-	if got[0].Approvals != 1 || got[0].Required != 2 || got[0].Conflict {
+	if got[0].Approvals != 1 || got[0].Required != 2 || got[0].State == "dirty" {
 		t.Fatalf("PR #1: got %+v, want 1/2 no conflict", got[0])
 	}
 	if got[1].Approvals != 2 || got[1].Required != 2 {
@@ -83,8 +83,8 @@ func Test_Refresh_FlagsConflictAndSkipsReview(t *testing.T) {
 
 	// Assert
 	got := d.List()
-	if len(got) != 1 || !got[0].Conflict {
-		t.Fatalf("expected PR #1 flagged as conflict, got %+v", got)
+	if len(got) != 1 || got[0].State != "dirty" {
+		t.Fatalf("expected PR #1 flagged as conflict (dirty), got %+v", got)
 	}
 }
 
