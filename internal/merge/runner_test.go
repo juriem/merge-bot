@@ -406,15 +406,15 @@ func Test_step_Declines_InCaseOfBlockedWithFailedCheck(t *testing.T) {
 	}
 }
 
-func Test_step_Declines_InCaseOfBlockedFailedCheckEvenWithPending(t *testing.T) {
-	// Arrange: a required check has failed while many others are still pending
-	// (the #7261 case). A completed failure blocks the PR regardless of pending,
-	// so the bot must not wait for the pending ones.
+func Test_step_Waits_InCaseOfBlockedFailedCheckWithPending(t *testing.T) {
+	// Arrange: one check failed but others are still running. The failed one may
+	// be non-required (the required list is hidden), so the bot must keep waiting
+	// instead of bouncing the PR out of the queue.
 	f := &fakeGitHub{
 		pr:     openPR("blocked"),
 		review: ReviewStatus{Approvals: 2},
 		runs: []CheckRun{
-			{Name: "frontend-api", Completed: true, Conclusion: "failure"},
+			{Name: "pre-commit", Completed: true, Conclusion: "failure"},
 			{Name: "svc-a", Completed: false},
 			{Name: "svc-b", Completed: false},
 		},
@@ -423,11 +423,14 @@ func Test_step_Declines_InCaseOfBlockedFailedCheckEvenWithPending(t *testing.T) 
 	r.MinApprovals = 2
 
 	// Act
-	_, err := r.step(context.Background())
+	done, err := r.step(context.Background())
 
 	// Assert
-	if !errors.Is(err, ErrRequiredCheckFailed) {
-		t.Fatalf("expected ErrRequiredCheckFailed, got: %v", err)
+	if err != nil {
+		t.Fatalf("expected to keep waiting, got error: %v", err)
+	}
+	if done {
+		t.Fatal("expected done=false (waiting for pending checks)")
 	}
 }
 

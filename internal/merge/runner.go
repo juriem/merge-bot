@@ -212,12 +212,17 @@ func (r Runner) handleBlocked(ctx context.Context, pr *github.PullRequest) (bool
 	pending, failed := CountChecks(runs)
 
 	switch {
+	case pending > 0:
+		// A failure alongside still-running checks is not a verdict: the failed
+		// one may be non-required (the required list is hidden behind rulesets)
+		// while required ones are still in flight. Once everything required is
+		// green GitHub flips the state to unstable/clean and the merge proceeds;
+		// declining now would bounce the PR out of the queue prematurely.
+		r.Logf("blocked: %d check(s) still running (%d failed so far); waiting", pending, failed)
+		return false, nil
 	case failed > 0:
 		r.logBlockers(ctx, head)
 		return false, fmt.Errorf("PR #%d blocked by %d failed check(s): %w", r.Number, failed, ErrRequiredCheckFailed)
-	case pending > 0:
-		r.Logf("blocked: %d check(s) still running; waiting", pending)
-		return false, nil
 	default:
 		return false, fmt.Errorf("PR #%d is blocked by branch protection and cannot be merged automatically: %w", r.Number, ErrBlocked)
 	}
