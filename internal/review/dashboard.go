@@ -16,23 +16,33 @@ type PR struct {
 	Title  string
 }
 
-// Entry is one dashboard row: one of my open PRs with its approval ratio and its
-// GitHub mergeable_state (clean / unstable / blocked / behind / dirty / unknown),
-// which the UI uses to tell a merge-ready PR from a conflicting or check-blocked
-// one. For a dirty (conflicting) PR the approval fields are not filled in.
+// Category buckets a dashboard PR into a UI tab.
+const (
+	CategoryMine     = "mine"     // ready or in-progress — shown in My Open PR
+	CategoryConflict = "conflict" // merge conflict — shown in Merge conflicts
+	CategoryFailed   = "failed"   // failed check that can't recover — shown in Failed
+)
+
+// Entry is one dashboard row: one of my open PRs, triaged into a Category, with
+// its approval ratio, GitHub mergeable_state and a display hint for the ones that
+// are not merge-ready. Approval fields are not filled in for a conflicting PR.
 type Entry struct {
 	Number    int    `json:"number"`
 	Title     string `json:"title"`
 	Approvals int    `json:"approvals"`
 	Required  int    `json:"required"`
 	State     string `json:"state"`
+	Category  string `json:"category"`
+	Hint      string `json:"hint"`
 }
 
 // Fetcher is the GitHub subset the dashboard needs.
 type Fetcher interface {
 	CurrentUser(ctx context.Context) (string, error)
 	ListOpenPRsByAuthor(ctx context.Context, owner, repo, author string) ([]PR, error)
-	MergeableState(ctx context.Context, owner, repo string, number int) (string, error)
+	PullState(ctx context.Context, owner, repo string, number int) (state, base, head string, err error)
+	BehindBy(ctx context.Context, owner, repo, base, head string) (int, error)
+	CheckRuns(ctx context.Context, owner, repo, ref string) ([]merge.CheckRun, error)
 	ReviewStatus(ctx context.Context, owner, repo string, number int) (merge.ReviewStatus, error)
 }
 
@@ -156,18 +166,22 @@ func (d *Dashboard) Refresh(ctx context.Context) error {
 	return nil
 }
 
-// entryFor builds one dashboard entry, returning ok=false when the PR should be
-// skipped (its state could not be read).
+// entryFor builds one dashboard entry, triaging the PR into a Category. It
+// returns ok=false when the PR should be skipped (state could not be read).
 func (d *Dashboard) entryFor(ctx context.Context, pr PR) (Entry, bool) {
-	state, err := d.fetcher.MergeableState(ctx, d.owner, d.repo, pr.Number)
+	state, base, head, err := d.fetcher.PullState(ctx, d.owner, d.repo, pr.Number)
 	if err != nil {
-		d.logf("dashboard mergeable PR #%d: %v", pr.Number, err)
+		d.logf("dashboard state PR #%d: %v", pr.Number, err)
 		return Entry{}, false
 	}
 
-	// A conflicting PR needs a rebase, not approvals; skip the review lookup.
-	if isConflict(state) {
-		return Entry{Number: pr.Number, Title: pr.Title, Required: d.minApprovals, State: state}, true
+	e := Entry{Number: pr.Number, Title: pr.Title, Required: d.minApprovals, State: state}
+
+	// A conflicting PR needs a rebase, not approvals — straight to the conflicts
+	// lane, no further lookups.
+	if state == "dirty" {
+		e.Category = CategoryConflict
+		return e, true
 	}
 
 	status, err := d.fetcher.ReviewStatus(ctx, d.owner, d.repo, pr.Number)
@@ -175,14 +189,71 @@ func (d *Dashboard) entryFor(ctx context.Context, pr PR) (Entry, bool) {
 		d.logf("dashboard review PR #%d: %v", pr.Number, err)
 		return Entry{}, false
 	}
+	e.Approvals = status.Approvals
 
-	return Entry{
-		Number:    pr.Number,
-		Title:     pr.Title,
-		Approvals: status.Approvals,
-		Required:  d.minApprovals,
-		State:     state,
-	}, true
+	// clean / unstable are mergeable (required checks green + approved) → ready.
+	if state == "clean" || state == "unstable" {
+		e.Category = CategoryMine
+		return e, true
+	}
+
+	// behind/unknown: not blocked by a failure — surface as an in-progress row.
+	if state != "blocked" {
+		e.Category = CategoryMine
+		if state == "behind" {
+			e.Hint = "behind base"
+		} else {
+			e.Hint = "checking…"
+		}
+		return e, true
+	}
+
+	// blocked: distinguish a dead check failure (→ Failed) from something still
+	// workable (pending, behind, or a review gate → stays in My Open PR).
+	behind, err := d.fetcher.BehindBy(ctx, d.owner, d.repo, base, head)
+	if err != nil {
+		d.logf("dashboard compare PR #%d: %v", pr.Number, err)
+		behind = 0
+	}
+	runs, err := d.fetcher.CheckRuns(ctx, d.owner, d.repo, head)
+	if err != nil {
+		d.logf("dashboard checks PR #%d: %v", pr.Number, err)
+		e.Category, e.Hint = CategoryMine, "blocked"
+		return e, true
+	}
+
+	var pending, failed int
+	for _, run := range runs {
+		switch {
+		case !run.Completed:
+			pending++
+		case !checkSucceeded(run.Conclusion):
+			failed++
+		}
+	}
+
+	switch {
+	case pending > 0:
+		e.Category, e.Hint = CategoryMine, "checking…"
+	case behind > 0:
+		e.Category, e.Hint = CategoryMine, "behind — update to re-run"
+	case failed > 0:
+		e.Category, e.Hint = CategoryFailed, "required check failed"
+	default:
+		e.Category, e.Hint = CategoryMine, "needs re-approval"
+	}
+
+	return e, true
+}
+
+// checkSucceeded mirrors the merge package: success/skipped/neutral count green.
+func checkSucceeded(conclusion string) bool {
+	switch conclusion {
+	case "success", "skipped", "neutral":
+		return true
+	default:
+		return false
+	}
 }
 
 // RefreshLoop refreshes once immediately, then on every interval tick until ctx
@@ -234,9 +305,4 @@ func (d *Dashboard) ensureAuthor(ctx context.Context) (string, error) {
 	d.mu.Unlock()
 
 	return author, nil
-}
-
-// isConflict reports whether a mergeable_state means the PR has merge conflicts.
-func isConflict(state string) bool {
-	return state == "dirty"
 }

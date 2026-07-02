@@ -166,24 +166,27 @@ flight, frozen once it finishes. Each merged PR also reports it in its message
 (`merged in …`), and the History tab shows aggregate stats (count, average,
 fastest, slowest time to merge).
 
-**Merge conflicts** collects PRs the queue parked as conflicting **and** my open
-PRs GitHub reports as dirty (from the dashboard). Both are re-checked
-automatically — queue ones in the background, dashboard ones on the dashboard
-refresh — and drop off once the conflict is resolved. Under-approved
-(`needs_approvals`) PRs are likewise re-checked and re-queued once ready. **Failed**
-and **History** each have a **Clear All** button; a failed or stopped PR has a
-**retry** button that re-queues it.
+The dashboard **triages** each of my open PRs (fetched in parallel — state,
+behind-base, checks, approvals) into the right tab:
 
-**My Open PR** is a review dashboard: on the same `--recheck-interval`, mergebot
-lists the token owner's own open, ready-for-review PRs in the repo (excluding any
-already in the merge queue, and conflicting ones which go to **Merge conflicts**).
-Each row shows its approval ratio (`1/2` against `--min-approvals`). A PR that is
-actually mergeable — GitHub `mergeable_state` `clean`/`unstable`, i.e. approved
-**and** required checks green — gets an **Add to queue** button; a PR held by
-failing/pending checks or another gate shows a hint (e.g. `checks not green`)
-instead. A **Generate list** button opens a dialog that builds a markdown list
-grouped by "approvals still needed"; tick/untick PRs to include only the ones you
-want, then copy it (handy for a nudge in chat).
+- **Merge conflicts** — dirty PRs (plus any the queue parked as conflicting).
+- **Failed** — a required check failed **and** the branch is up to date, so an
+  update can't recover it (plus the queue's own failed/stopped items).
+- **My Open PR** — everything else: ready PRs, and in-progress ones (checks
+  running, behind base, or a review gate like `require_last_push_approval`) shown
+  with a hint.
+
+Conflicts/Failed rows sourced from the dashboard clear automatically on the next
+refresh once the underlying state changes; queue-sourced ones re-check in the
+background. **Failed** and **History** have a **Clear All** button and a
+**retry** button (queue items only).
+
+**My Open PR** shows each PR's approval ratio (`1/2` against `--min-approvals`).
+Only a genuinely mergeable PR (`mergeable_state` `clean`/`unstable` — approved
+**and** required checks green) gets an **Add to queue** button; others show a
+hint (`behind base`, `checking…`, `needs re-approval`). A **Generate list**
+button builds a markdown list grouped by "approvals still needed" to paste as a
+reviewer nudge.
 
 The list is built by a background refresh that fetches PRs in parallel; while the
 first pass runs the tab shows a loading spinner. Because the queue keeps moving

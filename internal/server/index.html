@@ -279,50 +279,60 @@ function phaseLabel(p) { return PHASE_LABELS[p] || p; }
 function actionCell(it) {
   if (QUEUE_PHASES.includes(it.phase))
     return `<button class="remove" data-remove="${it.number}">remove</button>`;
+  // Dashboard-only rows (_review) are live status from GitHub, not queue items —
+  // no queue action; they clear on the background dashboard refresh.
+  if (it._review) return "";
   if (FAILED_PHASES.includes(it.phase))
     return `<button class="retry" data-retry="${it.number}">retry</button>`;
-  // Only queue-parked conflicts can be re-checked via the queue; dashboard-only
-  // conflicts are refreshed automatically by the background dashboard refresh.
-  if (it.phase === "conflicts" && !it._review)
+  if (it.phase === "conflicts")
     return `<button class="retry" data-requeue="${it.number}">recheck</button>`;
   return "";
 }
 
 // A PR is safe to add only when GitHub reports it mergeable — required checks
 // green and approved (clean), or mergeable with only non-required checks red
-// (unstable). blocked/behind/dirty/unknown are not offered.
+// (unstable).
 function addable(state) { return state === "clean" || state === "unstable"; }
 
-const STATE_HINTS = { blocked: "checks not green", behind: "behind base", unknown: "checking…", "": "checking…" };
-
-// My Open PR: my open, non-conflicting PRs not already in the queue. Conflicting
-// ones are shown in the Merge conflicts tab instead. Sorted by approvals still
-// needed (most first).
-function myOpenItems() {
-  const inQueue = new Set(LAST_ITEMS.filter(it => QUEUE_PHASES.includes(it.phase)).map(it => it.number));
-  const rank = e => Math.max(0, e.required - e.approvals);
-  return READY
-    .filter(e => e.state !== "dirty" && !inQueue.has(e.number))
-    .sort((a, b) => rank(b) - rank(a));
+// dashItems returns the dashboard entries (my open PRs) the backend triaged into
+// the given category, that the queue is not already tracking.
+function dashItems(category) {
+  const tracked = new Set(LAST_ITEMS.map(it => it.number));
+  return READY.filter(e => e.category === category && !tracked.has(e.number));
 }
 
-// Merge conflicts tab: PRs the queue parked as conflicting plus my open PRs
-// GitHub reports as dirty, deduped (a queued one keeps its queue actions).
-function conflictItems() {
+// My Open PR: my open PRs that are ready or in progress (not conflicting, not a
+// dead failure), sorted by approvals still needed (most first).
+function myOpenItems() {
+  const rank = e => Math.max(0, e.required - e.approvals);
+  return dashItems("mine").sort((a, b) => rank(b) - rank(a));
+}
+
+// Merge conflicts / Failed tabs merge the queue's own items with my open PRs the
+// dashboard triaged into the same bucket, deduped (a queued one keeps its actions).
+function mergedItems(queuePhases, category, dashMessage) {
   const byNum = new Map();
-  LAST_ITEMS.filter(it => it.phase === "conflicts").forEach(it => byNum.set(it.number, it));
-  READY.filter(e => e.state === "dirty").forEach(e => {
+  LAST_ITEMS.filter(it => queuePhases.includes(it.phase)).forEach(it => byNum.set(it.number, it));
+  dashItems(category).forEach(e => {
     if (!byNum.has(e.number)) {
-      byNum.set(e.number, { number: e.number, phase: "conflicts", message: e.title || "merge conflict", _review: true });
+      byNum.set(e.number, { number: e.number, phase: queuePhases[0], message: e.title || "", error: dashMessage(e), _review: true });
     }
   });
   return [...byNum.values()];
 }
 
+function conflictItems() {
+  return mergedItems(["conflicts"], "conflict", () => "");
+}
+
+function failedItems() {
+  return mergedItems(FAILED_PHASES, "failed", e => e.hint || "required check failed");
+}
+
 function mineRow(e) {
   const met = e.approvals >= e.required;
   const ratio = `<span class="badge ${met ? "ratio-ok" : "ratio-wait"}">${e.approvals}/${e.required}</span>`;
-  const hint = addable(e.state) ? "" : ` <span class="hint">${escapeHtml(STATE_HINTS[e.state] || e.state)}</span>`;
+  const hint = (!addable(e.state) && e.hint) ? ` <span class="hint">${escapeHtml(e.hint)}</span>` : "";
   const action = addable(e.state) ? `<button class="primary" data-add="${e.number}">Add to queue</button>` : "";
   return `<tr>
     <td class="num"><a href="${prHref(e.number)}" target="_blank">#${e.number}</a></td>
@@ -339,7 +349,7 @@ function render(items) {
     queue: items.filter(it => QUEUE_PHASES.includes(it.phase)),
     conflicts: conflictItems(),
     mine: myOpenItems(),
-    failed: items.filter(it => FAILED_PHASES.includes(it.phase)).sort(RECENT_FIRST),
+    failed: failedItems(),
     history: items.filter(it => HISTORY_PHASES.includes(it.phase)).sort(RECENT_FIRST),
   };
   document.getElementById("count-queue").textContent = byTab.queue.length;

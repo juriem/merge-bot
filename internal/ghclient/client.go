@@ -82,15 +82,26 @@ func (c *Client) GetPullRequest(ctx context.Context, owner, repo string, number 
 	return pr, err
 }
 
-// MergeableState returns GitHub's mergeable_state for a pull request (e.g.
-// "clean", "dirty", "blocked", "unknown").
-func (c *Client) MergeableState(ctx context.Context, owner, repo string, number int) (string, error) {
+// PullState returns a pull request's mergeable_state along with its base branch
+// and head SHA (needed to compare with base and list check runs).
+func (c *Client) PullState(ctx context.Context, owner, repo string, number int) (state, base, head string, err error) {
 	pr, _, err := c.gh.PullRequests.Get(ctx, owner, repo, number)
 	if err != nil {
-		return "", err
+		return "", "", "", err
 	}
 
-	return pr.GetMergeableState(), nil
+	return pr.GetMergeableState(), pr.GetBase().GetRef(), pr.GetHead().GetSHA(), nil
+}
+
+// BehindBy returns how many commits head is behind base (0 when head already
+// contains everything in base) — i.e. whether "Update branch" would do anything.
+func (c *Client) BehindBy(ctx context.Context, owner, repo, base, head string) (int, error) {
+	cmp, _, err := c.gh.Repositories.CompareCommits(ctx, owner, repo, base, head, &github.ListOptions{PerPage: 1})
+	if err != nil {
+		return 0, err
+	}
+
+	return cmp.GetBehindBy(), nil
 }
 
 // CurrentUser returns the login of the authenticated token owner.
