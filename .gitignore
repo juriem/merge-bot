@@ -1,5 +1,4 @@
 /mergebot
 .env
-mergebot-queue.json
-mergebot-queue.json.tmp
+mergebot-queue.json*
 .idea/
