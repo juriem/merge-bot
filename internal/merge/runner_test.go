@@ -19,6 +19,7 @@ type fakeGitHub struct {
 	review      ReviewStatus
 	mergeErr    error
 	updateErr   error
+	behindBy    int
 
 	merged  bool
 	updated bool
@@ -55,6 +56,10 @@ func (f *fakeGitHub) RequiredChecks(context.Context, string, string, string) ([]
 
 func (f *fakeGitHub) CheckRuns(context.Context, string, string, string) ([]CheckRun, error) {
 	return f.runs, f.runsErr
+}
+
+func (f *fakeGitHub) BehindBy(context.Context, string, string, string, string) (int, error) {
+	return f.behindBy, nil
 }
 
 func openPR(state string) *github.PullRequest {
@@ -403,6 +408,33 @@ func Test_step_Declines_InCaseOfBlockedWithFailedCheck(t *testing.T) {
 	// Assert
 	if !errors.Is(err, ErrRequiredCheckFailed) {
 		t.Fatalf("expected ErrRequiredCheckFailed, got: %v", err)
+	}
+}
+
+func Test_step_UpdatesBranch_InCaseOfBlockedFailedCheckButBehind(t *testing.T) {
+	// Arrange: approved, a check failed with nothing pending, but the branch is
+	// behind base (the #7416 case) — update it so CI re-runs, don't declare dead.
+	f := &fakeGitHub{
+		pr:       openPR("blocked"),
+		review:   ReviewStatus{Approvals: 2},
+		runs:     []CheckRun{{Name: "aikido", Completed: true, Conclusion: "failure"}},
+		behindBy: 4,
+	}
+	r := newRunner(f)
+	r.MinApprovals = 2
+
+	// Act
+	done, err := r.step(context.Background())
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if done {
+		t.Fatal("expected done=false (updating, not declining)")
+	}
+	if !f.updated {
+		t.Fatal("expected the branch to be updated to re-run CI")
 	}
 }
 

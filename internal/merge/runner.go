@@ -65,6 +65,7 @@ type GitHub interface {
 	ReviewStatus(ctx context.Context, owner, repo string, number int) (ReviewStatus, error)
 	RequiredChecks(ctx context.Context, owner, repo, branch string) ([]string, error)
 	CheckRuns(ctx context.Context, owner, repo, ref string) ([]CheckRun, error)
+	BehindBy(ctx context.Context, owner, repo, base, head string) (int, error)
 }
 
 // Runner repeatedly inspects a pull request and brings it to a merged state.
@@ -221,8 +222,20 @@ func (r Runner) handleBlocked(ctx context.Context, pr *github.PullRequest) (bool
 		r.Logf("blocked: %d check(s) still running (%d failed so far); waiting", pending, failed)
 		return false, nil
 	case failed > 0:
+		// A stale branch is the usual reason a check is red while the PR is
+		// otherwise ready: update it so CI re-runs before giving up. Only an
+		// up-to-date branch with a completed failure is declared dead.
+		behind, err := r.Client.BehindBy(ctx, r.Owner, r.Repo, pr.GetBase().GetRef(), head)
+		if err != nil {
+			r.Logf("blocked; could not compare with base: %v; will re-check", err)
+			return false, nil
+		}
+		if behind > 0 {
+			r.Logf("blocked by %d failed check(s); branch is %d commit(s) behind — updating to re-run CI", failed, behind)
+			return false, r.update(ctx, head)
+		}
 		r.logBlockers(ctx, head)
-		return false, fmt.Errorf("PR #%d blocked by %d failed check(s): %w", r.Number, failed, ErrRequiredCheckFailed)
+		return false, fmt.Errorf("PR #%d blocked by %d failed check(s) on an up-to-date branch: %w", r.Number, failed, ErrRequiredCheckFailed)
 	default:
 		return false, fmt.Errorf("PR #%d is blocked by branch protection and cannot be merged automatically: %w", r.Number, ErrBlocked)
 	}

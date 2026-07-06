@@ -365,10 +365,15 @@ function mineRow(e) {
   const ratio = `<span class="badge ${met ? "ratio-ok" : "ratio-wait"}">${e.approvals}/${e.required}</span>`;
   const hint = (!addable(e.state) && e.hint) ? ` <span class="hint">${escapeHtml(e.hint)}</span>` : "";
   const action = met ? `<button class="primary" data-add="${e.number}">Add to queue</button>` : "";
+  // A hidden queue record for this PR means a previous attempt ended badly;
+  // surface why, otherwise a bounced add looks like the click did nothing.
+  const rec = LAST_ITEMS.find(it => it.number === e.number && FAILED_PHASES.includes(it.phase));
+  const lastErr = (rec && (rec.error || rec.message))
+    ? `<div class="err">last attempt: ${escapeHtml(rec.error || rec.message)}</div>` : "";
   return `<tr>
     <td class="num"><a href="${prHref(e.number)}" target="_blank">#${e.number}</a></td>
     <td>${ratio}</td>
-    <td class="msg">${escapeHtml(e.title || "")}${hint}</td>
+    <td class="msg">${escapeHtml(e.title || "")}${hint}${lastErr}</td>
     <td></td>
     <td>${action}</td>
   </tr>`;
@@ -473,12 +478,14 @@ async function requeueNow(n) {
 }
 
 async function addToQueue(n) {
-  await api("/api/items", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ number: parseInt(n, 10) }),
-  });
-  refresh();
+  try {
+    await api("/api/items", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ number: parseInt(n, 10) }),
+    });
+    refresh();
+  } catch (e) { alert(e.message); }
 }
 
 async function clearAll() {
