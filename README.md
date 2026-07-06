@@ -32,7 +32,7 @@ checks, conflicts and branch freshness:
 |-------------------|----------------------------------------------------------------|
 | `clean`           | merge (squash by default)                                      |
 | `behind`          | run **Update branch**, wait for CI to re-run, re-check         |
-| `blocked`         | wait, unless it is only under-approved — then park it (`needs_approvals`) |
+| `blocked`         | under-approved → park (`needs_approvals`); checks running → wait; a check failed on a stale branch → **Update branch** to re-run CI; failed on an up-to-date branch → decline |
 | `unstable`        | merge once all **required** checks pass; wait while a required check is pending, **decline** if one has failed (force with `--allow-unstable`) |
 | `dirty`           | park in **Merge conflicts** (needs a manual rebase); re-checked in the background and re-queued once the conflict is gone |
 | `draft` / closed  | stop                                                           |
@@ -267,7 +267,9 @@ The UI is served on `127.0.0.1` only and has no authentication; run it locally.
 | DELETE | `/api/items/{number}`           | —                 | stop / remove a PR               |
 | POST   | `/api/items/{number}/requeue`   | —                 | re-check a parked PR now         |
 | DELETE | `/api/items?phase=merged,stopped` | —               | clear finished PRs in those phases |
-| GET    | `/api/config`                   | —                 | repo shown in UI                 |
+| GET    | `/api/queuestats`               | —                 | sampled team-queue depth history (label mode) |
+| POST   | `/api/items/{number}/status`    | —                 | ask the queue bot for live status (label mode) |
+| GET    | `/api/config`                   | —                 | repo and merge mode shown in UI  |
 
 ## Configuration
 
