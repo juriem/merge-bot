@@ -30,12 +30,13 @@
 
   .header { display: flex; align-items: center; gap: .6rem; margin-bottom: 1.5rem; }
   .header h1 { font-size: 1.35rem; margin: 0; letter-spacing: -.01em; }
-  .header .repo { color: var(--muted); font-size: .95rem; }
+  .header .repo { color: var(--muted); font-size: .95rem; display: flex; flex-direction: column; line-height: 1.25; white-space: nowrap; }
+  .header .repo .mode { font-size: .76rem; color: var(--muted); opacity: .8; }
   .logo { width: 22px; height: 22px; color: var(--accent); flex: none; }
-  .hstats { margin-left: auto; display: flex; align-items: center; gap: 1.4rem; }
+  .hstats { margin-left: auto; display: flex; align-items: center; gap: 1.1rem; flex-wrap: wrap; justify-content: flex-end; row-gap: .4rem; }
   .hstat { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.15; }
   .hstat .n { font-size: 1.15rem; font-weight: 500; font-variant-numeric: tabular-nums; }
-  .hstat .l { font-size: .68rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .hstat .l { font-size: .68rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
   .hspark { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }
   .hspark svg { display: block; }
   @media (max-width: 720px) { .hstats { display: none; } }
@@ -259,11 +260,14 @@ function renderStats(items) {
 const RECENT_FIRST = (a, b) => new Date(b.updated_at) - new Date(a.updated_at);
 
 function sparkline(values) {
-  if (!values.length) return "";
-  const w = 116, h = 26, n = values.length, max = Math.max(...values, 1), bw = w / n;
+  // Fixed-width bars: with only a couple of samples a stretched bar reads as a
+  // solid block, so the chart grows with the series instead (and hides until
+  // there is an actual shape to show).
+  if (values.length < 4) return "";
+  const bw = 7, h = 26, n = values.length, w = n * bw, max = Math.max(...values, 1);
   const bars = values.map((v, i) => {
     const bh = Math.max(2, (v / max) * (h - 2));
-    return `<rect x="${(i * bw).toFixed(1)}" y="${(h - bh).toFixed(1)}" width="${Math.max(1, bw - 1.5).toFixed(1)}" height="${bh.toFixed(1)}" rx="1" fill="var(--accent)" opacity="0.75"/>`;
+    return `<rect x="${(i * bw).toFixed(1)}" y="${(h - bh).toFixed(1)}" width="${(bw - 1.5).toFixed(1)}" height="${bh.toFixed(1)}" rx="1" fill="var(--accent)" opacity="0.75"/>`;
   }).join("");
   return `<svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" preserveAspectRatio="none" aria-hidden="true">${bars}</svg>`;
 }
@@ -280,6 +284,11 @@ function renderHeaderStats(items) {
 
   // In label mode also show the external queue: latest sampled depth (open PRs
   // carrying the queue label), merged-today throughput and a depth sparkline.
+  const spark = (values, title, label) => {
+    const svg = sparkline(values);
+    return svg ? `<div class="hspark" title="${title}">${svg}<span class="l">${label}</span></div>` : "";
+  };
+
   let team = "";
   if (MODE === "label" && QSTATS.length) {
     const last = QSTATS[QSTATS.length - 1];
@@ -287,7 +296,7 @@ function renderHeaderStats(items) {
     team =
       `<div class="hstat"><span class="n">${last.waiting}</span><span class="l">team queue</span></div>` +
       `<div class="hstat"><span class="n">${last.merged_today}</span><span class="l">merged today</span></div>` +
-      (depth.some(v => v > 0) ? `<div class="hspark" title="team queue depth">${sparkline(depth)}<span class="l">queue depth</span></div>` : "");
+      (depth.some(v => v > 0) ? spark(depth, "team queue depth", "queue depth") : "");
   }
 
   document.getElementById("hstats").innerHTML =
@@ -295,7 +304,7 @@ function renderHeaderStats(items) {
     team +
     `<div class="hstat"><span class="n">${merged.length}</span><span class="l">merged</span></div>` +
     `<div class="hstat"><span class="n">${avg ? fmtDur(avg) : "—"}</span><span class="l">avg merge</span></div>` +
-    (recent.length ? `<div class="hspark" title="recent merge times">${sparkline(recent)}<span class="l">merge time</span></div>` : "");
+    spark(recent, "recent merge times", "merge time");
 }
 
 const PHASE_LABELS = {
@@ -644,8 +653,8 @@ document.querySelectorAll(".tab").forEach(tab =>
     REPO = cfg.repo;
     MODE = cfg.mode || "self";
     if (REPO) {
-      document.getElementById("repo-label").textContent =
-        REPO + (MODE === "label" ? " · delegating to team queue" : "");
+      document.getElementById("repo-label").innerHTML =
+        escapeHtml(REPO) + (MODE === "label" ? `<span class="mode">delegating to team queue</span>` : "");
     }
   } catch (e) { console.error(e); }
   refresh();
