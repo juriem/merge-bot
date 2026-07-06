@@ -152,6 +152,33 @@ func Test_Refresh_CategorisesBlockedPRs(t *testing.T) {
 	}
 }
 
+func Test_Refresh_MarksQueuedPRsByLabel(t *testing.T) {
+	// Arrange: #1 carries the external queue label, #2 does not.
+	f := fakeFetcher{
+		user: "me",
+		prs: []PR{
+			{Number: 1, Labels: []string{"ai-created", "merge-queue"}},
+			{Number: 2, Labels: []string{"ai-created"}},
+		},
+		statuses: map[int]merge.ReviewStatus{1: {Approvals: 2}, 2: {Approvals: 2}},
+	}
+	d := NewDashboard(f, "o", "r", 2, "", func(string, ...any) {}).WithQueueLabel("merge-queue")
+
+	// Act
+	if err := d.Refresh(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Assert
+	queued := map[int]bool{}
+	for _, e := range d.List() {
+		queued[e.Number] = e.Queued
+	}
+	if !queued[1] || queued[2] {
+		t.Fatalf("queued flags = %v, want #1 true, #2 false", queued)
+	}
+}
+
 func Test_Refresh_BlockedStaysInMineWhenBehindUnknown(t *testing.T) {
 	// Arrange: blocked with a failed check, but the behind-check errors — we can't
 	// tell if it's recoverable, so it must NOT be declared dead-failed.

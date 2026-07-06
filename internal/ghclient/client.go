@@ -211,7 +211,11 @@ func (c *Client) ListOpenPRsByAuthor(ctx context.Context, owner, repo, author st
 		}
 
 		for _, issue := range result.Issues {
-			out = append(out, review.PR{Number: issue.GetNumber(), Title: issue.GetTitle()})
+			pr := review.PR{Number: issue.GetNumber(), Title: issue.GetTitle()}
+			for _, l := range issue.Labels {
+				pr.Labels = append(pr.Labels, l.GetName())
+			}
+			out = append(out, pr)
 		}
 
 		if resp.NextPage == 0 {

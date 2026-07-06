@@ -14,6 +14,7 @@ import (
 type PR struct {
 	Number int
 	Title  string
+	Labels []string
 }
 
 // Category buckets a dashboard PR into a UI tab.
@@ -34,6 +35,7 @@ type Entry struct {
 	State     string `json:"state"`
 	Category  string `json:"category"`
 	Hint      string `json:"hint"`
+	Queued    bool   `json:"queued"` // carries the external queue label (label mode)
 }
 
 // Fetcher is the GitHub subset the dashboard needs.
@@ -55,6 +57,10 @@ type Dashboard struct {
 	logf         func(format string, args ...any)
 
 	poke chan struct{}
+
+	// queueLabel marks entries that are already in the external merge queue
+	// (label mode); empty disables the check. Set before RefreshLoop starts.
+	queueLabel string
 
 	mu      sync.Mutex
 	entries []Entry
@@ -79,6 +85,12 @@ func NewDashboard(f Fetcher, owner, repo string, minApprovals int, author string
 		logf:         logf,
 		poke:         make(chan struct{}, 1),
 	}
+}
+
+// WithQueueLabel enables the "already in the external queue" flag on entries.
+func (d *Dashboard) WithQueueLabel(label string) *Dashboard {
+	d.queueLabel = label
+	return d
 }
 
 // TriggerRefresh asks the refresh loop to rebuild the dashboard now, without
@@ -176,6 +188,14 @@ func (d *Dashboard) entryFor(ctx context.Context, pr PR) (Entry, bool) {
 	}
 
 	e := Entry{Number: pr.Number, Title: pr.Title, Required: d.minApprovals, State: state}
+	if d.queueLabel != "" {
+		for _, l := range pr.Labels {
+			if l == d.queueLabel {
+				e.Queued = true
+				break
+			}
+		}
+	}
 
 	// A conflicting PR needs a rebase, not approvals — straight to the conflicts
 	// lane, no further lookups.

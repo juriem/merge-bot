@@ -403,16 +403,28 @@ function mineRow(e) {
   // is offerable as soon as the approvals are met — no need to wait for clean.
   const met = e.approvals >= e.required;
   const ratio = `<span class="badge ${met ? "ratio-ok" : "ratio-wait"}">${e.approvals}/${e.required}</span>`;
+  // A PR can be in the external queue (label on GitHub) without mergebot
+  // tracking it — show that, offer a live /status probe, and let "track" put it
+  // under mergebot's watch (the delegate sees the label and just observes).
+  const queuedChip = e.queued ? ` <span class="badge active">in team queue</span>` : "";
   const hint = (!addable(e.state) && e.hint) ? ` <span class="hint">${escapeHtml(e.hint)}</span>` : "";
-  const action = met ? `<button class="primary" data-add="${e.number}">Add to queue</button>` : "";
+  let action = "";
+  if (e.queued) {
+    action = `<button class="retry" data-status="${e.number}">status</button> ` +
+      `<button class="primary" data-add="${e.number}">track</button>`;
+  } else if (met) {
+    action = `<button class="primary" data-add="${e.number}">Add to queue</button>`;
+  }
   // A hidden queue record for this PR means a previous attempt ended badly;
   // surface why, otherwise a bounced add looks like the click did nothing.
-  const rec = LAST_ITEMS.find(it => it.number === e.number && FAILED_PHASES.includes(it.phase));
+  // Once the PR made it into the team queue the old failure is history — hide it.
+  const rec = e.queued ? null
+    : LAST_ITEMS.find(it => it.number === e.number && FAILED_PHASES.includes(it.phase));
   const lastErr = (rec && (rec.error || rec.message))
     ? `<div class="err">last attempt: ${escapeHtml(rec.error || rec.message)}</div>` : "";
   return `<tr>
     <td class="num"><a href="${prHref(e.number)}" target="_blank">#${e.number}</a></td>
-    <td>${ratio}</td>
+    <td>${ratio}${queuedChip}</td>
     <td class="msg">${escapeHtml(e.title || "")}${hint}${lastErr}</td>
     <td></td>
     <td>${action}</td>

@@ -245,7 +245,11 @@ Label mode also adds **queue visibility**:
 - every queued/active row has a **status** button: an on-demand `/status` probe
   (posts one comment, reads the bot's reply) showing the precise picture — queue
   length, batch threshold, wait window and whether *this* PR is actually in the
-  queue.
+  queue;
+- a **My PRs** row that already carries the queue label (queued outside mergebot
+  — via GitHub or `/queue`) shows an **in team queue** chip with the same
+  **status** button, plus **track** to put it under mergebot's watch: the
+  delegate sees the label, only observes, and records the merge in **History**.
 
 **Rate limits** are handled transparently: the HTTP layer waits out GitHub's
 primary (`X-RateLimit-Reset`) and secondary (`Retry-After`) limits and retries,

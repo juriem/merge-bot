@@ -250,6 +250,9 @@ func runServe(args []string) error {
 	go mgr.Run(ctx)
 
 	dashboard := review.NewDashboard(client, owner, name, *cfg.minApprovals, *reviewAuthor, logf)
+	if *mergeMode == queue.ModeLabel {
+		dashboard.WithQueueLabel(*queueLabel)
+	}
 	go dashboard.RefreshLoop(ctx, *recheck)
 
 	web := server.New(mgr, *cfg.repo, dashboard).WithMode(*mergeMode)
