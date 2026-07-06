@@ -215,8 +215,15 @@ run mergebot with `--merge-mode=label`. Everything else keeps working — the
 **My PRs** dashboard, triage into conflicts/failed, **Add to queue**, History and
 timing stats — but instead of merging PRs itself, mergebot:
 
-- applies the queue label (`--queue-label`, default `merge-queue`) when you add a
-  PR, and watches it until the external queue merges it;
+- hands the PR over only once **all its checks are green** (queue bots reject
+  red PRs); while checks are still running the item waits as Active, and a
+  completed failure declines the handover;
+- applies the queue label (`--queue-label`, default `merge-queue`) and watches
+  the PR until the external queue merges it;
+- watches the PR comments for the bot's feedback: a **"Could not queue PR"**
+  reply moves the item to **Failed** with the bot's reason, and the now-stale
+  label is removed so a **retry** re-applies it and the bot re-evaluates (queue
+  bots don't retry on their own and leave the label behind);
 - reports the merge in **History** with the usual `merged in …` timing;
 - moves the PR to **Failed** if it is dequeued (label removed) or closed
   unmerged — recovery is manual (**retry**): auto-requeueing is off in this mode

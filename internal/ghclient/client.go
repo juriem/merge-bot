@@ -124,6 +124,38 @@ func (c *Client) RemoveLabel(ctx context.Context, owner, repo string, number int
 	return err
 }
 
+// ListComments returns the PR conversation comments created at or after since
+// (zero since means all), oldest first — used to spot queue-bot feedback.
+func (c *Client) ListComments(ctx context.Context, owner, repo string, number int, since time.Time) ([]merge.Comment, error) {
+	opts := &github.IssueListCommentsOptions{ListOptions: github.ListOptions{PerPage: 100}}
+	if !since.IsZero() {
+		opts.Since = &since
+	}
+
+	var out []merge.Comment
+	for {
+		comments, resp, err := c.gh.Issues.ListComments(ctx, owner, repo, number, opts)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, cm := range comments {
+			out = append(out, merge.Comment{
+				Author:    cm.GetUser().GetLogin(),
+				Body:      cm.GetBody(),
+				CreatedAt: cm.GetCreatedAt().Time,
+			})
+		}
+
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+
+	return out, nil
+}
+
 // CurrentUser returns the login of the authenticated token owner.
 func (c *Client) CurrentUser(ctx context.Context) (string, error) {
 	user, _, err := c.gh.Users.Get(ctx, "")

@@ -59,6 +59,14 @@ func (g *labelGitHub) RemoveLabel(_ context.Context, _, _ string, _ int, label s
 	return nil
 }
 
+func (g *labelGitHub) CheckRuns(context.Context, string, string, string) ([]merge.CheckRun, error) {
+	return nil, nil // no checks — counts as green
+}
+
+func (g *labelGitHub) ListComments(context.Context, string, string, int, time.Time) ([]merge.Comment, error) {
+	return nil, nil
+}
+
 func Test_process_LabelModeDelegatesAndTracksMerge(t *testing.T) {
 	// Arrange
 	g := &labelGitHub{}
