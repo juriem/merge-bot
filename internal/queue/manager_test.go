@@ -25,54 +25,49 @@ func (conflictGitHub) GetPullRequest(context.Context, string, string, int) (*git
 	}, nil
 }
 
-// labelGitHub implements both merge.GitHub and merge.LabelClient: the PR
-// reports merged as soon as the queue label has been applied.
-type labelGitHub struct {
+// teamQueueGitHub implements both merge.GitHub and merge.QueueClient: the PR
+// reports merged as soon as /queue has been posted.
+type teamQueueGitHub struct {
 	merge.GitHub
-	mu      sync.Mutex
-	added   []string
-	removed []string
+	mu     sync.Mutex
+	posted []string
 }
 
-func (g *labelGitHub) GetPullRequest(context.Context, string, string, int) (*github.PullRequest, error) {
+func (g *teamQueueGitHub) GetPullRequest(context.Context, string, string, int) (*github.PullRequest, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	pr := &github.PullRequest{State: github.String("open"), Merged: github.Bool(false)}
-	if len(g.added) > 0 {
+	pr := &github.PullRequest{
+		State:  github.String("open"),
+		Merged: github.Bool(false),
+		Head:   &github.PullRequestBranch{SHA: github.String("headsha")},
+	}
+	if len(g.posted) > 0 {
 		pr.Merged = github.Bool(true)
 		pr.State = github.String("closed")
 	}
 	return pr, nil
 }
 
-func (g *labelGitHub) AddLabel(_ context.Context, _, _ string, _ int, label string) error {
+func (g *teamQueueGitHub) CreateComment(_ context.Context, _, _ string, _ int, body string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.added = append(g.added, label)
+	g.posted = append(g.posted, body)
 	return nil
 }
 
-func (g *labelGitHub) RemoveLabel(_ context.Context, _, _ string, _ int, label string) error {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.removed = append(g.removed, label)
-	return nil
-}
-
-func (g *labelGitHub) CheckRuns(context.Context, string, string, string) ([]merge.CheckRun, error) {
+func (g *teamQueueGitHub) CheckRuns(context.Context, string, string, string) ([]merge.CheckRun, error) {
 	return nil, nil // no checks — counts as green
 }
 
-func (g *labelGitHub) ListComments(context.Context, string, string, int, time.Time) ([]merge.Comment, error) {
+func (g *teamQueueGitHub) ListComments(context.Context, string, string, int, time.Time) ([]merge.Comment, error) {
 	return nil, nil
 }
 
-func Test_process_LabelModeDelegatesAndTracksMerge(t *testing.T) {
+func Test_process_MergeQueueModeDelegatesAndTracksMerge(t *testing.T) {
 	// Arrange
-	g := &labelGitHub{}
+	g := &teamQueueGitHub{}
 	m := New(g, Config{
-		Owner: "o", Repo: "r", Interval: time.Millisecond,
-		MergeMode: ModeLabel, QueueLabel: "merge-queue",
+		Owner: "o", Repo: "r", Interval: time.Millisecond, MergeMode: ModeMergeQueue,
 	}, "", func(string, ...any) {})
 	it := &Item{Number: 1, Phase: PhaseQueued, AddedAt: time.Now()}
 
@@ -85,8 +80,8 @@ func Test_process_LabelModeDelegatesAndTracksMerge(t *testing.T) {
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if len(g.added) != 1 || g.added[0] != "merge-queue" {
-		t.Fatalf("labels added = %v, want [merge-queue]", g.added)
+	if len(g.posted) != 1 || g.posted[0] != "/queue" {
+		t.Fatalf("posted = %v, want [/queue]", g.posted)
 	}
 }
 

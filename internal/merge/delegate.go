@@ -17,46 +17,58 @@ type Comment struct {
 	CreatedAt time.Time
 }
 
-// LabelClient is the GitHub subset the delegate runner needs: enough to hand a
-// PR to an external label-driven merge queue and watch the outcome.
-type LabelClient interface {
+// QueueClient is the GitHub subset the delegate runner needs: enough to hand a
+// PR to a comment-driven team merge queue and watch the outcome.
+type QueueClient interface {
 	GetPullRequest(ctx context.Context, owner, repo string, number int) (*github.PullRequest, error)
-	AddLabel(ctx context.Context, owner, repo string, number int, label string) error
-	RemoveLabel(ctx context.Context, owner, repo string, number int, label string) error
 	CheckRuns(ctx context.Context, owner, repo, ref string) ([]CheckRun, error)
+	CreateComment(ctx context.Context, owner, repo string, number int, body string) error
 	ListComments(ctx context.Context, owner, repo string, number int, since time.Time) ([]Comment, error)
 }
 
-// rejectionMarker is how the external queue bot reports that it refused to
-// enqueue a PR (it replies with a comment and leaves the label in place).
-const rejectionMarker = "Could not queue PR"
+// The team queue bot's comment protocol, as observed:
+//   - "/queue" enqueues; the bot replies with a status block;
+//   - a reply containing "waiting at queue position" confirms the PR is queued;
+//   - "Could not queue PR" is a rejection (the bot does not retry on its own);
+//   - "is not currently in the custom merge queue" reports a dequeued/unknown PR;
+//   - "Validation batch ... started/failed" reports batch progress.
+const (
+	cmdQueue   = "/queue"
+	cmdDequeue = "/dequeue"
 
-// DelegateRunner drives a pull request through an external merge queue that is
-// triggered by a label (e.g. a team-wide "merge-queue" bot): it applies the
-// label and then only watches — the external queue owns updating, validating
-// and merging. There is deliberately no deadline: batch queues can hold a PR
-// for a long time, and the external queue owns the pacing.
-//
-// The label alone is not trusted as queue state: the bot refuses PRs (wrong
-// base, red checks) by commenting and leaves the label behind, so the runner
-// gates the handover on green checks and watches comments for rejections.
+	queuedMarker    = "waiting at queue position"
+	rejectionMarker = "Could not queue PR"
+	notQueuedMarker = "is not currently in the custom merge queue"
+	batchMarker     = "Validation batch"
+)
+
+// DelegateRunner drives a pull request through an external comment-driven merge
+// queue: it posts /queue and then only watches — the external queue owns
+// validating and merging. There is deliberately no deadline: batch queues can
+// hold a PR for a long time, and the external queue owns the pacing.
 type DelegateRunner struct {
-	Client   LabelClient
+	Client   QueueClient
 	Owner    string
 	Repo     string
 	Number   int
-	Label    string
 	Interval time.Duration
 	Logf     func(format string, args ...any)
 }
 
-// Run hands the PR to the external queue and polls until it is merged (nil),
-// closed without merging, dequeued, rejected by the queue bot, or ctx is
-// cancelled.
+// Run enqueues the PR and polls until it is merged (nil), closed without
+// merging, rejected by the queue bot, or ctx is cancelled.
 func (r DelegateRunner) Run(ctx context.Context) error {
-	labeled := false
-	var handedAt time.Time // rejections are only counted after this moment
+	// If the PR is already in the queue (enqueued via GitHub or a previous run),
+	// don't re-ask — just watch. The lookback keeps old, superseded signals out.
+	watchFrom := time.Now().Add(-7 * 24 * time.Hour)
+	asked := false
+	if sig := r.latestSignal(ctx, watchFrom); sig != nil && sig.kind == sigQueued {
+		r.Logf("PR #%d is already in the team queue; watching", r.Number)
+		asked = true
+		watchFrom = sig.at
+	}
 
+	lastMsg := ""
 	for {
 		pr, err := r.Client.GetPullRequest(ctx, r.Owner, r.Repo, r.Number)
 		switch {
@@ -67,32 +79,15 @@ func (r DelegateRunner) Run(ctx context.Context) error {
 			r.Logf("get PR #%d: %v; will re-check", r.Number, err)
 
 		case pr.GetMerged():
-			r.Logf("PR #%d merged by the delegated queue", r.Number)
+			r.Logf("PR #%d merged by the team queue", r.Number)
 			return nil
 
 		case pr.GetState() != "open":
 			return fmt.Errorf("PR #%d is %s, not open", r.Number, pr.GetState())
 
-		case hasLabel(pr, r.Label):
-			if !labeled {
-				// Labeled outside mergebot: watch from now on. A rejection that
-				// predates us is invisible — remove + retry re-triggers the bot.
-				r.Logf("PR #%d is in the %q queue; waiting for it to merge", r.Number, r.Label)
-				labeled = true
-				handedAt = time.Now()
-			}
-			if reason := r.rejection(ctx, handedAt); reason != "" {
-				// Drop the label so a retry re-applies it and the bot re-evaluates
-				// (it does not retry on its own and leaves the label behind).
-				if err := r.Client.RemoveLabel(ctx, r.Owner, r.Repo, r.Number, r.Label); err != nil {
-					r.Logf("remove %q label from PR #%d: %v", r.Label, r.Number, err)
-				}
-				return fmt.Errorf("PR #%d rejected by the %q queue: %s", r.Number, r.Label, reason)
-			}
-
-		case !labeled:
-			// The queue bot refuses PRs whose checks are not green, so gate the
-			// handover: wait out running checks, decline on a completed failure.
+		case !asked:
+			// The bot rejects PRs whose checks are not green, so gate the /queue:
+			// wait out running checks, decline on a completed failure.
 			runs, err := r.Client.CheckRuns(ctx, r.Owner, r.Repo, pr.GetHead().GetSHA())
 			if err != nil {
 				r.Logf("list checks for PR #%d: %v; will re-check", r.Number, err)
@@ -102,23 +97,34 @@ func (r DelegateRunner) Run(ctx context.Context) error {
 			pending, failed := CountChecks(runs)
 			switch {
 			case pending > 0:
-				r.Logf("PR #%d: waiting for %d running check(s) before handover (%d failed so far)", r.Number, pending, failed)
+				r.Logf("PR #%d: waiting for %d running check(s) before queueing (%d failed so far)", r.Number, pending, failed)
 			case failed > 0:
-				return fmt.Errorf("PR #%d has %d failed check(s); the %q queue would reject it: %w", r.Number, failed, r.Label, ErrRequiredCheckFailed)
+				return fmt.Errorf("PR #%d has %d failed check(s); the team queue would reject it: %w", r.Number, failed, ErrRequiredCheckFailed)
 			default:
-				if err := r.Client.AddLabel(ctx, r.Owner, r.Repo, r.Number, r.Label); err != nil {
-					r.Logf("add %q label to PR #%d: %v; will retry", r.Label, r.Number, err)
+				if err := r.Client.CreateComment(ctx, r.Owner, r.Repo, r.Number, cmdQueue); err != nil {
+					r.Logf("post %s on PR #%d: %v; will retry", cmdQueue, r.Number, err)
 				} else {
-					labeled = true
-					handedAt = time.Now()
-					r.Logf("handed PR #%d to the %q queue", r.Number, r.Label)
+					asked = true
+					watchFrom = time.Now()
+					r.Logf("posted %s on PR #%d; waiting for the team queue", cmdQueue, r.Number)
 				}
 			}
 
 		default:
-			// We saw the label earlier and it is gone while the PR is still open:
-			// someone (or the queue bot) dequeued it.
-			return fmt.Errorf("PR #%d left the %q queue without merging (label removed)", r.Number, r.Label)
+			sig := r.latestSignal(ctx, watchFrom)
+			if sig != nil {
+				switch sig.kind {
+				case sigRejected:
+					return fmt.Errorf("PR #%d rejected by the team queue: %s", r.Number, sig.detail)
+				case sigNotQueued:
+					return fmt.Errorf("PR #%d left the team queue without merging", r.Number)
+				default:
+					if sig.detail != lastMsg {
+						lastMsg = sig.detail
+						r.Logf("PR #%d: %s", r.Number, sig.detail)
+					}
+				}
+			}
 		}
 
 		select {
@@ -129,30 +135,83 @@ func (r DelegateRunner) Run(ctx context.Context) error {
 	}
 }
 
-// rejection returns the queue bot's rejection message posted after since, or ""
-// when there is none (or the comments cannot be read right now).
-func (r DelegateRunner) rejection(ctx context.Context, since time.Time) string {
+type signalKind int
+
+const (
+	sigQueued signalKind = iota
+	sigRejected
+	sigNotQueued
+	sigBatch
+)
+
+type queueSignal struct {
+	kind   signalKind
+	detail string
+	at     time.Time
+}
+
+// latestSignal returns the newest queue-bot signal after since, or nil.
+func (r DelegateRunner) latestSignal(ctx context.Context, since time.Time) *queueSignal {
 	comments, err := r.Client.ListComments(ctx, r.Owner, r.Repo, r.Number, since)
 	if err != nil {
 		r.Logf("list comments of PR #%d: %v; will re-check", r.Number, err)
-		return ""
+		return nil
 	}
 
+	var latest *queueSignal
 	for _, c := range comments {
-		if c.CreatedAt.After(since) && strings.Contains(c.Body, rejectionMarker) {
-			return strings.TrimSpace(c.Body)
+		if !c.CreatedAt.After(since) {
+			continue
+		}
+		if sig := parseQueueSignal(c); sig != nil {
+			if latest == nil || sig.at.After(latest.at) {
+				latest = sig
+			}
 		}
 	}
 
-	return ""
+	return latest
 }
 
-func hasLabel(pr *github.PullRequest, name string) bool {
-	for _, l := range pr.Labels {
-		if l.GetName() == name {
-			return true
+// QueuedFromComments reports whether the newest queue signal among the comments
+// says the PR is in the team queue (a batch in progress counts as queued). Used
+// by the review dashboard to flag externally-queued PRs.
+func QueuedFromComments(comments []Comment) bool {
+	var latest *queueSignal
+	for _, c := range comments {
+		if sig := parseQueueSignal(c); sig != nil {
+			if latest == nil || sig.at.After(latest.at) {
+				latest = sig
+			}
 		}
 	}
 
-	return false
+	return latest != nil && (latest.kind == sigQueued || latest.kind == sigBatch)
+}
+
+// parseQueueSignal classifies one comment, or returns nil for unrelated ones.
+func parseQueueSignal(c Comment) *queueSignal {
+	switch {
+	case strings.Contains(c.Body, rejectionMarker):
+		return &queueSignal{kind: sigRejected, detail: strings.TrimSpace(c.Body), at: c.CreatedAt}
+	case strings.Contains(c.Body, queuedMarker):
+		return &queueSignal{kind: sigQueued, detail: firstLineWith(c.Body, queuedMarker), at: c.CreatedAt}
+	case strings.Contains(c.Body, notQueuedMarker):
+		return &queueSignal{kind: sigNotQueued, at: c.CreatedAt}
+	case strings.Contains(c.Body, batchMarker):
+		return &queueSignal{kind: sigBatch, detail: firstLineWith(c.Body, batchMarker), at: c.CreatedAt}
+	default:
+		return nil
+	}
+}
+
+// firstLineWith returns the (markdown-stripped) line of body containing marker.
+func firstLineWith(body, marker string) string {
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, marker) {
+			return strings.TrimSpace(strings.ReplaceAll(line, "`", ""))
+		}
+	}
+
+	return marker
 }

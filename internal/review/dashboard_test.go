@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strconv"
 	"testing"
+	"time"
 
 	"mergebot/internal/merge"
 )
@@ -20,6 +21,11 @@ type fakeFetcher struct {
 	runs      map[int][]merge.CheckRun
 	statuses  map[int]merge.ReviewStatus
 	statErr   map[int]error
+	comments  map[int][]merge.Comment
+}
+
+func (f fakeFetcher) ListComments(_ context.Context, _, _ string, number int, _ time.Time) ([]merge.Comment, error) {
+	return f.comments[number], nil
 }
 
 func (f fakeFetcher) CurrentUser(context.Context) (string, error) { return f.user, nil }
@@ -152,17 +158,17 @@ func Test_Refresh_CategorisesBlockedPRs(t *testing.T) {
 	}
 }
 
-func Test_Refresh_MarksQueuedPRsByLabel(t *testing.T) {
-	// Arrange: #1 carries the external queue label, #2 does not.
+func Test_Refresh_MarksQueuedPRsByBotComments(t *testing.T) {
+	// Arrange: the bot confirmed #1 as queued; #2 has no queue signals.
 	f := fakeFetcher{
-		user: "me",
-		prs: []PR{
-			{Number: 1, Labels: []string{"ai-created", "merge-queue"}},
-			{Number: 2, Labels: []string{"ai-created"}},
-		},
+		user:     "me",
+		prs:      []PR{{Number: 1}, {Number: 2}},
 		statuses: map[int]merge.ReviewStatus{1: {Approvals: 2}, 2: {Approvals: 2}},
+		comments: map[int][]merge.Comment{
+			1: {{Author: "bot", Body: "This PR: waiting at queue position `1` of `1`", CreatedAt: time.Now()}},
+		},
 	}
-	d := NewDashboard(f, "o", "r", 2, "", func(string, ...any) {}).WithQueueLabel("merge-queue")
+	d := NewDashboard(f, "o", "r", 2, "", func(string, ...any) {}).WithTeamQueue()
 
 	// Act
 	if err := d.Refresh(context.Background()); err != nil {

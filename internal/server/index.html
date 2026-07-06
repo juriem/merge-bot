@@ -282,20 +282,20 @@ function renderHeaderStats(items) {
     .slice(-16)
     .map(it => (new Date(it.merged_at) - new Date(it.added_at)) / 1000);
 
-  // In label mode also show the external queue: latest sampled depth (open PRs
-  // carrying the queue label), merged-today throughput and a depth sparkline.
   const spark = (values, title, label) => {
     const svg = sparkline(values);
     return svg ? `<div class="hspark" title="${title}">${svg}<span class="l">${label}</span></div>` : "";
   };
 
+  // In merge-queue mode also show the external queue. Depth comes from the bot's
+  // own replies (recorded on every status probe) — it reflects what the bot last
+  // reported, not a live poll.
   let team = "";
-  if (MODE === "label" && QSTATS.length) {
+  if (MODE === "merge-queue" && QSTATS.length) {
     const last = QSTATS[QSTATS.length - 1];
     const depth = QSTATS.slice(-16).map(s => s.waiting);
     team =
       `<div class="hstat"><span class="n">${last.waiting}</span><span class="l">team queue</span></div>` +
-      `<div class="hstat"><span class="n">${last.merged_today}</span><span class="l">merged today</span></div>` +
       (depth.some(v => v > 0) ? spark(depth, "team queue depth", "queue depth") : "");
   }
 
@@ -315,9 +315,9 @@ function phaseLabel(p) { return PHASE_LABELS[p] || p; }
 
 function actionCell(it) {
   if (QUEUE_PHASES.includes(it.phase)) {
-    // In label mode the team bot knows the real queue position — offer an
+    // In merge-queue mode the team bot knows the real queue position — offer an
     // on-demand /status probe next to remove (one probe = one comment pair).
-    const st = MODE === "label"
+    const st = MODE === "merge-queue"
       ? `<button class="retry" data-status="${it.number}">status</button> ` : "";
     return `${st}<button class="remove" data-remove="${it.number}">remove</button>`;
   }
@@ -403,9 +403,9 @@ function mineRow(e) {
   // is offerable as soon as the approvals are met — no need to wait for clean.
   const met = e.approvals >= e.required;
   const ratio = `<span class="badge ${met ? "ratio-ok" : "ratio-wait"}">${e.approvals}/${e.required}</span>`;
-  // A PR can be in the external queue (label on GitHub) without mergebot
-  // tracking it — show that, offer a live /status probe, and let "track" put it
-  // under mergebot's watch (the delegate sees the label and just observes).
+  // A PR can be in the external queue (the bot confirmed it in a comment)
+  // without mergebot tracking it — show that, offer a live /status probe, and
+  // let "track" put it under mergebot's watch (the delegate just observes).
   const queuedChip = e.queued ? ` <span class="badge active">in team queue</span>` : "";
   const hint = (!addable(e.state) && e.hint) ? ` <span class="hint">${escapeHtml(e.hint)}</span>` : "";
   let action = "";
@@ -666,7 +666,7 @@ document.querySelectorAll(".tab").forEach(tab =>
     MODE = cfg.mode || "self";
     if (REPO) {
       document.getElementById("repo-label").innerHTML =
-        escapeHtml(REPO) + (MODE === "label" ? `<span class="mode">delegating to team queue</span>` : "");
+        escapeHtml(REPO) + (MODE === "merge-queue" ? `<span class="mode">delegating to team queue</span>` : "");
     }
   } catch (e) { console.error(e); }
   refresh();

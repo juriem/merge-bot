@@ -39,11 +39,11 @@ type Item struct {
 	MergedAt  *time.Time `json:"merged_at,omitempty"` // set once merged; AddedAt→MergedAt is the time to merge
 }
 
-// Merge modes: self merges PRs directly (the classic behaviour); label hands
-// each PR to an external label-driven merge queue and only watches the outcome.
+// Merge modes: self merges PRs directly (the classic behaviour); merge-queue
+// hands each PR to an external team merge queue (comment-driven) and watches.
 const (
-	ModeSelf  = "self"
-	ModeLabel = "label"
+	ModeSelf       = "self"
+	ModeMergeQueue = "merge-queue"
 )
 
 // Config holds the merge settings shared by every processed pull request.
@@ -56,8 +56,7 @@ type Config struct {
 	MergeMethod     string
 	MinApprovals    int
 	Concurrency     int    // how many PRs to drive in parallel; <1 means 1
-	MergeMode       string // ModeSelf (default) or ModeLabel
-	QueueLabel      string // label that triggers the external queue in ModeLabel
+	MergeMode       string // ModeSelf (default) or ModeMergeQueue
 	AllowUnstable   bool
 	AllowUnresolved bool
 }
@@ -397,10 +396,10 @@ func (m *Manager) recheckParked(ctx context.Context) {
 	}
 
 	m.recheckByState(ctx, conflicts, PhaseConflicts, conflictResolved, "conflict resolved; back in queue")
-	// In label mode a failed item usually means someone deliberately dequeued the
-	// PR (removed the label); auto-requeueing would fight them by re-applying it,
-	// so recovery there is manual (retry). Self mode auto-recovers as usual.
-	if m.cfg.MergeMode != ModeLabel {
+	// In merge-queue mode a failed item usually means someone deliberately
+	// dequeued the PR; auto-requeueing would fight them by re-posting /queue, so
+	// recovery there is manual (retry). Self mode auto-recovers as usual.
+	if m.cfg.MergeMode != ModeMergeQueue {
 		m.recheckByState(ctx, failed, PhaseFailed, checksRecovered, "checks recovered; back in queue")
 	}
 }
@@ -466,20 +465,19 @@ func (m *Manager) requeueParked(number int, from Phase, msg string) {
 }
 
 // drive runs one PR to completion using the configured merge mode: merging it
-// ourselves (self) or handing it to the external label-driven queue (label).
+// ourselves (self) or handing it to the external team merge queue (merge-queue).
 func (m *Manager) drive(ctx context.Context, it *Item) error {
-	if m.cfg.MergeMode == ModeLabel {
-		lc, ok := m.client.(merge.LabelClient)
+	if m.cfg.MergeMode == ModeMergeQueue {
+		qc, ok := m.client.(merge.QueueClient)
 		if !ok {
-			return fmt.Errorf("merge mode %q requires a label-capable GitHub client", ModeLabel)
+			return fmt.Errorf("merge mode %q requires a queue-capable GitHub client", ModeMergeQueue)
 		}
 
 		return merge.DelegateRunner{
-			Client:   lc,
+			Client:   qc,
 			Owner:    m.cfg.Owner,
 			Repo:     m.cfg.Repo,
 			Number:   it.Number,
-			Label:    m.cfg.QueueLabel,
 			Interval: m.cfg.Interval,
 			Logf:     m.itemLogger(it),
 		}.Run(ctx)
@@ -500,10 +498,10 @@ func (m *Manager) drive(ctx context.Context, it *Item) error {
 	}.Run(ctx)
 }
 
-// removeQueueLabel best-effort dequeues a PR from the external queue after a
-// manual stop, so removing it in the UI also removes it from the team queue.
-func (m *Manager) removeQueueLabel(number int) {
-	lc, ok := m.client.(merge.LabelClient)
+// dequeue best-effort removes a PR from the external queue after a manual stop
+// (posts /dequeue), so removing it in the UI also removes it from the team queue.
+func (m *Manager) dequeue(number int) {
+	qc, ok := m.client.(merge.QueueClient)
 	if !ok {
 		return
 	}
@@ -511,8 +509,8 @@ func (m *Manager) removeQueueLabel(number int) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := lc.RemoveLabel(ctx, m.cfg.Owner, m.cfg.Repo, number, m.cfg.QueueLabel); err != nil {
-		m.logf("remove %q label from PR #%d: %v", m.cfg.QueueLabel, number, err)
+	if err := qc.CreateComment(ctx, m.cfg.Owner, m.cfg.Repo, number, "/dequeue"); err != nil {
+		m.logf("post /dequeue on PR #%d: %v", number, err)
 	}
 }
 
@@ -528,10 +526,10 @@ func (m *Manager) process(ctx context.Context, it *Item) {
 
 	switch {
 	case it.Phase == PhaseStopped:
-		// Removed by the user while active; keep the stopped state. In label mode
-		// also take the PR out of the external queue, best-effort.
-		if m.cfg.MergeMode == ModeLabel {
-			go m.removeQueueLabel(it.Number)
+		// Removed by the user while active; keep the stopped state. In merge-queue
+		// mode also take the PR out of the external queue, best-effort.
+		if m.cfg.MergeMode == ModeMergeQueue {
+			go m.dequeue(it.Number)
 		}
 	case err == nil:
 		merged := now

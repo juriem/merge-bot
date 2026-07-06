@@ -6,6 +6,7 @@ import (
 	"embed"
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -34,12 +35,13 @@ type Reviewer interface {
 	TriggerRefresh()
 }
 
-// Stats supplies sampled external-queue depth history (label mode).
+// Stats accumulates observed external-queue depth samples (merge-queue mode).
 type Stats interface {
 	History() []queuestats.Snapshot
+	Record(waiting int)
 }
 
-// Prober asks the external queue bot for a PR's live status (label mode).
+// Prober asks the external queue bot for a PR's live status (merge-queue mode).
 type Prober interface {
 	Probe(ctx context.Context, number int) (string, error)
 }
@@ -60,19 +62,19 @@ func New(q Queue, repo string, reviewer Reviewer) *Server {
 	return &Server{queue: q, reviewer: reviewer, repo: repo}
 }
 
-// WithMode records the merge mode ("self" or "label") shown in the UI header.
+// WithMode records the merge mode ("self" or "merge-queue") shown in the UI header.
 func (s *Server) WithMode(mode string) *Server {
 	s.mode = mode
 	return s
 }
 
-// WithStats attaches the external-queue stats collector (label mode).
+// WithStats attaches the external-queue stats collector (merge-queue mode).
 func (s *Server) WithStats(st Stats) *Server {
 	s.stats = st
 	return s
 }
 
-// WithProber attaches the /status prober (label mode).
+// WithProber attaches the /status prober (merge-queue mode).
 func (s *Server) WithProber(p Prober) *Server {
 	s.prober = p
 	return s
@@ -96,7 +98,7 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
-// queueStats returns the sampled external-queue history (empty outside label mode).
+// queueStats returns the sampled external-queue history (empty outside merge-queue mode).
 func (s *Server) queueStats(w http.ResponseWriter, r *http.Request) {
 	if s.stats == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"history": []queuestats.Snapshot{}})
@@ -109,7 +111,7 @@ func (s *Server) queueStats(w http.ResponseWriter, r *http.Request) {
 // probeStatus asks the external queue bot for a PR's live status.
 func (s *Server) probeStatus(w http.ResponseWriter, r *http.Request) {
 	if s.prober == nil {
-		http.Error(w, "status probing is only available in label mode", http.StatusNotImplemented)
+		http.Error(w, "status probing is only available in merge-queue mode", http.StatusNotImplemented)
 		return
 	}
 
@@ -128,8 +130,22 @@ func (s *Server) probeStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The bot's reply is the only machine-readable queue-depth source; feed it
+	// into the stats history opportunistically.
+	if s.stats != nil {
+		if m := queueLengthRe.FindStringSubmatch(status); m != nil {
+			if n, err := strconv.Atoi(m[1]); err == nil {
+				s.stats.Record(n)
+			}
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]string{"status": status})
 }
+
+// queueLengthRe extracts "Queue length: N" from the bot's (markdown-stripped)
+// status summary.
+var queueLengthRe = regexp.MustCompile(`Queue length:\s*(\d+)`)
 
 func (s *Server) config(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"repo": s.repo, "mode": s.mode})

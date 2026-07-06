@@ -14,7 +14,6 @@ import (
 type PR struct {
 	Number int
 	Title  string
-	Labels []string
 }
 
 // Category buckets a dashboard PR into a UI tab.
@@ -35,7 +34,7 @@ type Entry struct {
 	State     string `json:"state"`
 	Category  string `json:"category"`
 	Hint      string `json:"hint"`
-	Queued    bool   `json:"queued"` // carries the external queue label (label mode)
+	Queued    bool   `json:"queued"` // already in the team merge queue (merge-queue mode)
 }
 
 // Fetcher is the GitHub subset the dashboard needs.
@@ -46,6 +45,7 @@ type Fetcher interface {
 	BehindBy(ctx context.Context, owner, repo, base, head string) (int, error)
 	CheckRuns(ctx context.Context, owner, repo, ref string) ([]merge.CheckRun, error)
 	ReviewStatus(ctx context.Context, owner, repo string, number int) (merge.ReviewStatus, error)
+	ListComments(ctx context.Context, owner, repo string, number int, since time.Time) ([]merge.Comment, error)
 }
 
 // Dashboard periodically lists the token owner's ready-for-review PRs and caches
@@ -58,9 +58,9 @@ type Dashboard struct {
 
 	poke chan struct{}
 
-	// queueLabel marks entries that are already in the external merge queue
-	// (label mode); empty disables the check. Set before RefreshLoop starts.
-	queueLabel string
+	// teamQueue enables the "already in the external queue" flag, detected from
+	// the queue bot's comments. Set before RefreshLoop starts.
+	teamQueue bool
 
 	mu      sync.Mutex
 	entries []Entry
@@ -87,9 +87,10 @@ func NewDashboard(f Fetcher, owner, repo string, minApprovals int, author string
 	}
 }
 
-// WithQueueLabel enables the "already in the external queue" flag on entries.
-func (d *Dashboard) WithQueueLabel(label string) *Dashboard {
-	d.queueLabel = label
+// WithTeamQueue enables the "already in the external queue" flag on entries,
+// detected from the queue bot's comments (the bot keeps no label state).
+func (d *Dashboard) WithTeamQueue() *Dashboard {
+	d.teamQueue = true
 	return d
 }
 
@@ -188,12 +189,12 @@ func (d *Dashboard) entryFor(ctx context.Context, pr PR) (Entry, bool) {
 	}
 
 	e := Entry{Number: pr.Number, Title: pr.Title, Required: d.minApprovals, State: state}
-	if d.queueLabel != "" {
-		for _, l := range pr.Labels {
-			if l == d.queueLabel {
-				e.Queued = true
-				break
-			}
+	if d.teamQueue {
+		comments, err := d.fetcher.ListComments(ctx, d.owner, d.repo, pr.Number, time.Now().Add(-7*24*time.Hour))
+		if err != nil {
+			d.logf("dashboard comments PR #%d: %v", pr.Number, err)
+		} else {
+			e.Queued = merge.QueuedFromComments(comments)
 		}
 	}
 

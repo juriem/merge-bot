@@ -1,10 +1,10 @@
-// Package queuestats silently samples the external (label-driven) merge queue
-// via the GitHub search API — no comments are posted — and keeps a persisted
-// history so the UI can chart queue depth and throughput.
+// Package queuestats keeps a persisted history of team merge-queue depth
+// samples. The team queue exposes no machine-readable API, so samples are
+// extracted from the queue bot's comment replies (e.g. /status probes) and
+// recorded here — no polling of its own.
 package queuestats
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -12,38 +12,27 @@ import (
 	"time"
 )
 
-// Searcher is the GitHub subset the collector needs.
-type Searcher interface {
-	CountOpenPRsWithLabel(ctx context.Context, owner, repo, label string) (int, error)
-	CountMergedWithLabelSince(ctx context.Context, owner, repo, label string, since time.Time) (int, error)
-}
-
-// Snapshot is one sample of the external queue.
+// Snapshot is one observed sample of the external queue.
 type Snapshot struct {
-	At          time.Time `json:"at"`
-	Waiting     int       `json:"waiting"`      // open PRs carrying the queue label
-	MergedToday int       `json:"merged_today"` // labelled PRs merged since local midnight
+	At      time.Time `json:"at"`
+	Waiting int       `json:"waiting"` // PRs waiting, as reported by the queue bot
 }
 
-// maxHistory bounds the persisted series (288 samples = 24h at 5m).
+// maxHistory bounds the persisted series.
 const maxHistory = 288
 
-// Collector polls the queue label counts and keeps a bounded history.
+// Collector accumulates observed queue-depth samples.
 type Collector struct {
-	searcher Searcher
-	owner    string
-	repo     string
-	label    string
-	path     string // persistence file; empty disables
-	logf     func(format string, args ...any)
+	path string // persistence file; empty disables
+	logf func(format string, args ...any)
 
 	mu      sync.Mutex
 	history []Snapshot
 }
 
 // New builds a Collector. path may be empty to disable persistence.
-func New(s Searcher, owner, repo, label, path string, logf func(format string, args ...any)) *Collector {
-	return &Collector{searcher: s, owner: owner, repo: repo, label: label, path: path, logf: logf}
+func New(path string, logf func(format string, args ...any)) *Collector {
+	return &Collector{path: path, logf: logf}
 }
 
 // Load restores previously persisted history.
@@ -83,55 +72,15 @@ func (c *Collector) History() []Snapshot {
 	return out
 }
 
-// Poll takes one sample and appends it to the history.
-func (c *Collector) Poll(ctx context.Context) error {
-	waiting, err := c.searcher.CountOpenPRsWithLabel(ctx, c.owner, c.repo, c.label)
-	if err != nil {
-		return err
-	}
-
-	now := time.Now()
-	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	merged, err := c.searcher.CountMergedWithLabelSince(ctx, c.owner, c.repo, c.label, midnight)
-	if err != nil {
-		return err
-	}
-
+// Record appends one observed queue-depth sample.
+func (c *Collector) Record(waiting int) {
 	c.mu.Lock()
-	c.history = append(c.history, Snapshot{At: now, Waiting: waiting, MergedToday: merged})
+	c.history = append(c.history, Snapshot{At: time.Now(), Waiting: waiting})
 	if len(c.history) > maxHistory {
 		c.history = c.history[len(c.history)-maxHistory:]
 	}
 	c.save()
 	c.mu.Unlock()
-
-	return nil
-}
-
-// Run polls once immediately, then on every interval tick until ctx is
-// cancelled. A non-positive interval falls back to five minutes.
-func (c *Collector) Run(ctx context.Context, interval time.Duration) {
-	if interval <= 0 {
-		interval = 5 * time.Minute
-	}
-
-	if err := c.Poll(ctx); err != nil && ctx.Err() == nil {
-		c.logf("queue stats: %v", err)
-	}
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := c.Poll(ctx); err != nil && ctx.Err() == nil {
-				c.logf("queue stats: %v", err)
-			}
-		}
-	}
 }
 
 // save persists the history. The caller must hold c.mu.

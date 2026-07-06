@@ -209,47 +209,43 @@ re-queued).
 
 ### Delegated mode (external merge queue)
 
-If the repository already has a team merge queue driven by a label (a bot that
-picks up PRs labelled e.g. `merge-queue`, validates them in batches and merges),
-run mergebot with `--merge-mode=label`. Everything else keeps working — the
+If the repository already has a comment-driven team merge queue (a bot that
+enqueues a PR on a `/queue` comment, validates PRs in batches and merges), run
+mergebot with `--merge-mode=merge-queue`. Everything else keeps working — the
 **My PRs** dashboard, triage into conflicts/failed, **Add to queue**, History and
 timing stats — but instead of merging PRs itself, mergebot:
 
-- hands the PR over only once **all its checks are green** (queue bots reject
-  red PRs); while checks are still running the item waits as Active, and a
-  completed failure declines the handover;
-- applies the queue label (`--queue-label`, default `merge-queue`) and watches
-  the PR until the external queue merges it;
-- watches the PR comments for the bot's feedback: a **"Could not queue PR"**
-  reply moves the item to **Failed** with the bot's reason, and the now-stale
-  label is removed so a **retry** re-applies it and the bot re-evaluates (queue
-  bots don't retry on their own and leave the label behind);
+- hands the PR over only once **all its checks are green** (the queue bot
+  rejects red PRs); while checks are still running the item waits as Active, and
+  a completed failure declines the handover;
+- posts **`/queue`** and watches the bot's comment replies (the bot keeps no
+  label state): a reply containing *"waiting at queue position …"* confirms the
+  PR is queued, batch started/failed comments show up as live status;
+- a **"Could not queue PR"** reply moves the item to **Failed** with the bot's
+  reason (the bot does not retry on its own) — **retry** re-posts `/queue`;
 - reports the merge in **History** with the usual `merged in …` timing;
-- moves the PR to **Failed** if it is dequeued (label removed) or closed
-  unmerged — recovery is manual (**retry**): auto-requeueing is off in this mode
-  so mergebot never re-applies a label someone deliberately removed;
-- removes the label (best-effort) when you remove the PR from the UI, so the
-  external queue drops it too.
+- posts **`/dequeue`** (best-effort) when you remove the PR from the UI, so the
+  team queue drops it too; auto-requeueing is off in this mode so mergebot never
+  re-queues a PR someone deliberately dequeued.
 
 There is no per-PR deadline in this mode: batch queues can legitimately hold a
 PR for a long time, and the external queue owns the pacing. The UI header shows
 `delegating to team queue` so it is obvious which mode is running.
 
-Label mode also adds **queue visibility**:
+Merge-queue mode also adds **queue visibility**:
 
-- a silent background sampler (same `--recheck-interval`; API reads only, no
-  comments) tracks the external queue — the header shows **team queue** depth,
-  **merged today** and a queue-depth sparkline; the history is persisted next to
-  the state file (`<state>.stats.json`). Depth counts open PRs carrying the
-  label, so it is an upper bound (a rejected PR keeps its label);
 - every queued/active row has a **status** button: an on-demand `/status` probe
   (posts one comment, reads the bot's reply) showing the precise picture — queue
-  length, batch threshold, wait window and whether *this* PR is actually in the
-  queue;
-- a **My PRs** row that already carries the queue label (queued outside mergebot
-  — via GitHub or `/queue`) shows an **in team queue** chip with the same
-  **status** button, plus **track** to put it under mergebot's watch: the
-  delegate sees the label, only observes, and records the merge in **History**.
+  length, batch threshold, wait window and this PR's queue position;
+- the queue depth from every parsed bot reply is recorded to a persisted history
+  (`<state>.stats.json`) — the header shows the last reported **team queue**
+  depth and a depth sparkline (the bot has no machine-readable API, so samples
+  accumulate from probes rather than a live poll);
+- a **My PRs** row that is already in the team queue (queued outside mergebot —
+  the dashboard spots the bot's confirmation comments) shows an **in team
+  queue** chip with the same **status** button, plus **track** to put it under
+  mergebot's watch: the delegate sees it is queued, only observes, and records
+  the merge in **History**.
 
 **Rate limits** are handled transparently: the HTTP layer waits out GitHub's
 primary (`X-RateLimit-Reset`) and secondary (`Retry-After`) limits and retries,
@@ -271,8 +267,8 @@ The UI is served on `127.0.0.1` only and has no authentication; run it locally.
 | DELETE | `/api/items/{number}`           | —                 | stop / remove a PR               |
 | POST   | `/api/items/{number}/requeue`   | —                 | re-check a parked PR now         |
 | DELETE | `/api/items?phase=merged,stopped` | —               | clear finished PRs in those phases |
-| GET    | `/api/queuestats`               | —                 | sampled team-queue depth history (label mode) |
-| POST   | `/api/items/{number}/status`    | —                 | ask the queue bot for live status (label mode) |
+| GET    | `/api/queuestats`               | —                 | sampled team-queue depth history (merge-queue mode) |
+| POST   | `/api/items/{number}/status`    | —                 | ask the queue bot for live status (merge-queue mode) |
 | GET    | `/api/config`                   | —                 | repo and merge mode shown in UI  |
 
 ## Configuration
@@ -297,8 +293,7 @@ Every flag has an environment-variable fallback. Precedence:
 | `--recheck-interval` | `MERGEBOT_RECHECK_INTERVAL` | `5m`             | `serve` only; re-check parked PRs; `0` disables |
 | `--concurrency`   | `MERGEBOT_CONCURRENCY`    | `1`                   | `serve` only; PRs driven in parallel |
 | `--review-author` | `MERGEBOT_REVIEW_AUTHOR`  | token owner           | `serve` only; GitHub login for the My PRs dashboard |
-| `--merge-mode`    | `MERGEBOT_MERGE_MODE`     | `self`                | `serve` only; `self` merges directly, `label` delegates to an external queue |
-| `--queue-label`   | `MERGEBOT_QUEUE_LABEL`    | `merge-queue`         | `serve` only; label that triggers the external queue |
+| `--merge-mode`    | `MERGEBOT_MERGE_MODE`     | `self`                | `serve` only; `self` merges directly, `merge-queue` delegates to the team queue (comment-driven) |
 
 ## Releasing
 

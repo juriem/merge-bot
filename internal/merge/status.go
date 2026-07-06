@@ -83,6 +83,7 @@ func summarizeStatus(body string) string {
 			strings.HasPrefix(line, "Next validation batch:"),
 			strings.HasPrefix(line, "Batch wait window:"),
 			strings.HasPrefix(line, "Validation batches:"),
+			strings.HasPrefix(line, "This PR:"),
 			strings.Contains(line, "currently in the"):
 			out = append(out, line)
 		}

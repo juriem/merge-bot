@@ -158,9 +158,13 @@ func Test_refreshReady_TriggersDashboard(t *testing.T) {
 	}
 }
 
-type fakeStats struct{ history []queuestats.Snapshot }
+type fakeStats struct {
+	history  []queuestats.Snapshot
+	recorded []int
+}
 
-func (f fakeStats) History() []queuestats.Snapshot { return f.history }
+func (f *fakeStats) History() []queuestats.Snapshot { return f.history }
+func (f *fakeStats) Record(waiting int)             { f.recorded = append(f.recorded, waiting) }
 
 type fakeProber struct{ probed []int }
 
@@ -170,12 +174,24 @@ func (f *fakeProber) Probe(_ context.Context, number int) (string, error) {
 }
 
 func Test_queueStats_ReturnsHistory(t *testing.T) {
-	st := fakeStats{history: []queuestats.Snapshot{{Waiting: 4, MergedToday: 2}}}
+	st := &fakeStats{history: []queuestats.Snapshot{{Waiting: 4}}}
 	h := New(&fakeQueue{}, "o/r", nil).WithStats(st).Handler()
 
 	w := do(t, h, http.MethodGet, "/api/queuestats", "")
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"waiting":4`) {
 		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+	}
+}
+
+func Test_probeStatus_RecordsQueueDepth(t *testing.T) {
+	st := &fakeStats{}
+	h := New(&fakeQueue{}, "o/r", nil).WithStats(st).WithProber(&fakeProber{}).Handler()
+
+	if w := do(t, h, http.MethodPost, "/api/items/1/status", ""); w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if len(st.recorded) != 1 || st.recorded[0] != 3 {
+		t.Fatalf("recorded = %v, want [3] parsed from the bot reply", st.recorded)
 	}
 }
 

@@ -192,8 +192,7 @@ func runServe(args []string) error {
 	recheck := fs.Duration("recheck-interval", envDurationOr("MERGEBOT_RECHECK_INTERVAL", 5*time.Minute), "how often to re-check parked (needs-approvals) PRs; 0 disables")
 	concurrency := fs.Int("concurrency", envIntOr("MERGEBOT_CONCURRENCY", 1), "how many PRs to drive in parallel")
 	reviewAuthor := fs.String("review-author", envOr("MERGEBOT_REVIEW_AUTHOR", ""), "GitHub login for the My PRs dashboard (default: token owner)")
-	mergeMode := fs.String("merge-mode", envOr("MERGEBOT_MERGE_MODE", queue.ModeSelf), "self merges PRs directly; label delegates to an external merge queue by applying --queue-label")
-	queueLabel := fs.String("queue-label", envOr("MERGEBOT_QUEUE_LABEL", "merge-queue"), "label that triggers the external merge queue (merge-mode=label)")
+	mergeMode := fs.String("merge-mode", envOr("MERGEBOT_MERGE_MODE", queue.ModeSelf), "self merges PRs directly; merge-queue delegates to the team merge queue (comment-driven)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -207,11 +206,8 @@ func runServe(args []string) error {
 	if *recheck < 0 {
 		return fmt.Errorf("--recheck-interval cannot be negative, got %s", *recheck)
 	}
-	if *mergeMode != queue.ModeSelf && *mergeMode != queue.ModeLabel {
-		return fmt.Errorf("--merge-mode must be %q or %q, got %q", queue.ModeSelf, queue.ModeLabel, *mergeMode)
-	}
-	if *mergeMode == queue.ModeLabel && *queueLabel == "" {
-		return fmt.Errorf("--queue-label cannot be empty in merge-mode=label")
+	if *mergeMode != queue.ModeSelf && *mergeMode != queue.ModeMergeQueue {
+		return fmt.Errorf("--merge-mode must be %q or %q, got %q", queue.ModeSelf, queue.ModeMergeQueue, *mergeMode)
 	}
 
 	owner, name, err := splitRepo(*cfg.repo)
@@ -238,7 +234,6 @@ func runServe(args []string) error {
 		MinApprovals:    *cfg.minApprovals,
 		Concurrency:     *concurrency,
 		MergeMode:       *mergeMode,
-		QueueLabel:      *queueLabel,
 		AllowUnstable:   *cfg.allowUnstable,
 		AllowUnresolved: *cfg.allowUnresolved,
 	}, *statePath, logf)
@@ -250,23 +245,22 @@ func runServe(args []string) error {
 	go mgr.Run(ctx)
 
 	dashboard := review.NewDashboard(client, owner, name, *cfg.minApprovals, *reviewAuthor, logf)
-	if *mergeMode == queue.ModeLabel {
-		dashboard.WithQueueLabel(*queueLabel)
+	if *mergeMode == queue.ModeMergeQueue {
+		dashboard.WithTeamQueue()
 	}
 	go dashboard.RefreshLoop(ctx, *recheck)
 
 	web := server.New(mgr, *cfg.repo, dashboard).WithMode(*mergeMode)
 
-	if *mergeMode == queue.ModeLabel {
+	if *mergeMode == queue.ModeMergeQueue {
 		statsPath := ""
 		if *statePath != "" {
 			statsPath = *statePath + ".stats.json"
 		}
-		stats := queuestats.New(client, owner, name, *queueLabel, statsPath, logf)
+		stats := queuestats.New(statsPath, logf)
 		if err := stats.Load(); err != nil {
 			logf("load queue stats: %v", err)
 		}
-		go stats.Run(ctx, *recheck)
 
 		web = web.WithStats(stats).WithProber(merge.StatusProber{Client: client, Owner: owner, Repo: name})
 	}

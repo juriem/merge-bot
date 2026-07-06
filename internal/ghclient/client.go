@@ -19,7 +19,7 @@ import (
 
 // Client implements the review dashboard's Fetcher in addition to merge.GitHub.
 var _ review.Fetcher = (*Client)(nil)
-var _ merge.LabelClient = (*Client)(nil)
+var _ merge.QueueClient = (*Client)(nil)
 
 // Client is a thin wrapper around go-github exposing only the operations the
 // merge runner relies on.
@@ -105,25 +105,6 @@ func (c *Client) BehindBy(ctx context.Context, owner, repo, base, head string) (
 	return cmp.GetBehindBy(), nil
 }
 
-// AddLabel puts a label on a pull request (labels live on the issue side of the
-// API). Adding an already-present label is a no-op on GitHub's side.
-func (c *Client) AddLabel(ctx context.Context, owner, repo string, number int, label string) error {
-	_, _, err := c.gh.Issues.AddLabelsToIssue(ctx, owner, repo, number, []string{label})
-
-	return err
-}
-
-// RemoveLabel removes a label from a pull request. A 404 (label not present)
-// counts as success — the desired state is reached either way.
-func (c *Client) RemoveLabel(ctx context.Context, owner, repo string, number int, label string) error {
-	resp, err := c.gh.Issues.RemoveLabelForIssue(ctx, owner, repo, number, label)
-	if err != nil && resp != nil && resp.StatusCode == http.StatusNotFound {
-		return nil
-	}
-
-	return err
-}
-
 // ListComments returns the PR conversation comments created at or after since
 // (zero since means all), oldest first — used to spot queue-bot feedback.
 func (c *Client) ListComments(ctx context.Context, owner, repo string, number int, since time.Time) ([]merge.Comment, error) {
@@ -164,29 +145,6 @@ func (c *Client) CreateComment(ctx context.Context, owner, repo string, number i
 	return err
 }
 
-// countSearch returns the total hit count for a search query without fetching
-// the hits themselves.
-func (c *Client) countSearch(ctx context.Context, query string) (int, error) {
-	res, _, err := c.gh.Search.Issues(ctx, query, &github.SearchOptions{ListOptions: github.ListOptions{PerPage: 1}})
-	if err != nil {
-		return 0, err
-	}
-
-	return res.GetTotal(), nil
-}
-
-// CountOpenPRsWithLabel returns how many open PRs currently carry the label —
-// an upper-bound approximation of the external queue's depth.
-func (c *Client) CountOpenPRsWithLabel(ctx context.Context, owner, repo, label string) (int, error) {
-	return c.countSearch(ctx, fmt.Sprintf(`repo:%s/%s is:pr is:open label:"%s"`, owner, repo, label))
-}
-
-// CountMergedWithLabelSince returns how many labelled PRs merged on/after since
-// (day precision — GitHub search does not filter by time of day).
-func (c *Client) CountMergedWithLabelSince(ctx context.Context, owner, repo, label string, since time.Time) (int, error) {
-	return c.countSearch(ctx, fmt.Sprintf(`repo:%s/%s is:pr is:merged label:"%s" merged:>=%s`, owner, repo, label, since.Format("2006-01-02")))
-}
-
 // CurrentUser returns the login of the authenticated token owner.
 func (c *Client) CurrentUser(ctx context.Context) (string, error) {
 	user, _, err := c.gh.Users.Get(ctx, "")
@@ -211,11 +169,7 @@ func (c *Client) ListOpenPRsByAuthor(ctx context.Context, owner, repo, author st
 		}
 
 		for _, issue := range result.Issues {
-			pr := review.PR{Number: issue.GetNumber(), Title: issue.GetTitle()}
-			for _, l := range issue.Labels {
-				pr.Labels = append(pr.Labels, l.GetName())
-			}
-			out = append(out, pr)
+			out = append(out, review.PR{Number: issue.GetNumber(), Title: issue.GetTitle()})
 		}
 
 		if resp.NextPage == 0 {
