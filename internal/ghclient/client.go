@@ -156,6 +156,37 @@ func (c *Client) ListComments(ctx context.Context, owner, repo string, number in
 	return out, nil
 }
 
+// CreateComment posts a comment on a pull request (comments live on the issue
+// side of the API) — used to send commands like /status to a queue bot.
+func (c *Client) CreateComment(ctx context.Context, owner, repo string, number int, body string) error {
+	_, _, err := c.gh.Issues.CreateComment(ctx, owner, repo, number, &github.IssueComment{Body: &body})
+
+	return err
+}
+
+// countSearch returns the total hit count for a search query without fetching
+// the hits themselves.
+func (c *Client) countSearch(ctx context.Context, query string) (int, error) {
+	res, _, err := c.gh.Search.Issues(ctx, query, &github.SearchOptions{ListOptions: github.ListOptions{PerPage: 1}})
+	if err != nil {
+		return 0, err
+	}
+
+	return res.GetTotal(), nil
+}
+
+// CountOpenPRsWithLabel returns how many open PRs currently carry the label —
+// an upper-bound approximation of the external queue's depth.
+func (c *Client) CountOpenPRsWithLabel(ctx context.Context, owner, repo, label string) (int, error) {
+	return c.countSearch(ctx, fmt.Sprintf(`repo:%s/%s is:pr is:open label:"%s"`, owner, repo, label))
+}
+
+// CountMergedWithLabelSince returns how many labelled PRs merged on/after since
+// (day precision — GitHub search does not filter by time of day).
+func (c *Client) CountMergedWithLabelSince(ctx context.Context, owner, repo, label string, since time.Time) (int, error) {
+	return c.countSearch(ctx, fmt.Sprintf(`repo:%s/%s is:pr is:merged label:"%s" merged:>=%s`, owner, repo, label, since.Format("2006-01-02")))
+}
+
 // CurrentUser returns the login of the authenticated token owner.
 func (c *Client) CurrentUser(ctx context.Context) (string, error) {
 	user, _, err := c.gh.Users.Get(ctx, "")

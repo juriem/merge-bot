@@ -113,6 +113,9 @@
     font-family: ui-monospace, SFMono-Regular, monospace; border: 1px solid var(--border);
     border-radius: 8px; background: var(--bg); color: var(--text); }
   .md-actions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: .8rem; }
+  .status-output { margin: 0; padding: .6rem; font-size: .82rem; white-space: pre-wrap;
+    font-family: ui-monospace, SFMono-Regular, monospace; border: 1px solid var(--border);
+    border-radius: 8px; background: var(--bg); color: var(--text); }
 
   @media (max-width: 600px) {
     .app { padding: 1.2rem .8rem 3rem; }
@@ -175,12 +178,22 @@
     </div>
   </dialog>
 
+  <dialog id="status-dialog">
+    <h3 id="status-title">Team queue status</h3>
+    <pre id="status-output" class="status-output"></pre>
+    <div class="md-actions">
+      <button id="status-close" type="button">Close</button>
+    </div>
+  </dialog>
+
 <script>
 let REPO = null;
 let CURRENT_TAB = "queue";
 let LAST_ITEMS = [];
 let READY = [];
 let READY_LOADED = false;
+let MODE = "self";
+let QSTATS = [];
 const QUEUE_PHASES = ["queued", "active"];
 const FAILED_PHASES = ["failed", "stopped"];
 const HISTORY_PHASES = ["merged"];
@@ -265,8 +278,21 @@ function renderHeaderStats(items) {
     .slice(-16)
     .map(it => (new Date(it.merged_at) - new Date(it.added_at)) / 1000);
 
+  // In label mode also show the external queue: latest sampled depth (open PRs
+  // carrying the queue label), merged-today throughput and a depth sparkline.
+  let team = "";
+  if (MODE === "label" && QSTATS.length) {
+    const last = QSTATS[QSTATS.length - 1];
+    const depth = QSTATS.slice(-16).map(s => s.waiting);
+    team =
+      `<div class="hstat"><span class="n">${last.waiting}</span><span class="l">team queue</span></div>` +
+      `<div class="hstat"><span class="n">${last.merged_today}</span><span class="l">merged today</span></div>` +
+      (depth.some(v => v > 0) ? `<div class="hspark" title="team queue depth">${sparkline(depth)}<span class="l">queue depth</span></div>` : "");
+  }
+
   document.getElementById("hstats").innerHTML =
     `<div class="hstat"><span class="n">${inQueue}</span><span class="l">in queue</span></div>` +
+    team +
     `<div class="hstat"><span class="n">${merged.length}</span><span class="l">merged</span></div>` +
     `<div class="hstat"><span class="n">${avg ? fmtDur(avg) : "—"}</span><span class="l">avg merge</span></div>` +
     (recent.length ? `<div class="hspark" title="recent merge times">${sparkline(recent)}<span class="l">merge time</span></div>` : "");
@@ -279,8 +305,13 @@ const PHASE_LABELS = {
 function phaseLabel(p) { return PHASE_LABELS[p] || p; }
 
 function actionCell(it) {
-  if (QUEUE_PHASES.includes(it.phase))
-    return `<button class="remove" data-remove="${it.number}">remove</button>`;
+  if (QUEUE_PHASES.includes(it.phase)) {
+    // In label mode the team bot knows the real queue position — offer an
+    // on-demand /status probe next to remove (one probe = one comment pair).
+    const st = MODE === "label"
+      ? `<button class="retry" data-status="${it.number}">status</button> ` : "";
+    return `${st}<button class="remove" data-remove="${it.number}">remove</button>`;
+  }
   // Dashboard-only rows (_review) are live status from GitHub, not queue items —
   // no queue action; they clear on the background dashboard refresh.
   if (it._review) return "";
@@ -438,6 +469,8 @@ function render(items) {
     b.addEventListener("click", () => requeueNow(b.dataset.requeue)));
   rows.querySelectorAll("[data-add]").forEach(b =>
     b.addEventListener("click", () => addToQueue(b.dataset.add)));
+  rows.querySelectorAll("[data-status]").forEach(b =>
+    b.addEventListener("click", () => statusOf(b.dataset.status, b)));
 }
 
 function escapeHtml(s) {
@@ -446,12 +479,14 @@ function escapeHtml(s) {
 
 async function refresh() {
   try {
-    const [items, ready] = await Promise.all([
+    const [items, ready, qstats] = await Promise.all([
       api("/api/items"),
       api("/api/ready").catch(() => ({ prs: [], loaded: true })),
+      api("/api/queuestats").catch(() => ({ history: [] })),
     ]);
     READY = ready.prs || [];
     READY_LOADED = !!ready.loaded;
+    QSTATS = qstats.history || [];
     render(items);
   } catch (e) { console.error(e); }
 }
@@ -475,6 +510,25 @@ async function requeueNow(n) {
     await api(`/api/items/${n}/requeue`, { method: "POST" });
     refresh();
   } catch (e) { alert(e.message); }
+}
+
+// statusOf asks the queue bot for the PR's live status (takes a few seconds —
+// the bot answers via a PR comment) and shows the summary in a dialog.
+async function statusOf(n, btn) {
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "asking…";
+  try {
+    const res = await api(`/api/items/${n}/status`, { method: "POST" });
+    document.getElementById("status-title").textContent = `Team queue status — #${n}`;
+    document.getElementById("status-output").textContent = res.status || "(empty reply)";
+    document.getElementById("status-dialog").showModal();
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
 }
 
 async function addToQueue(n) {
@@ -554,6 +608,8 @@ function renderMarkdown() {
 document.getElementById("generate").addEventListener("click", openGenerate);
 document.getElementById("md-close").addEventListener("click", () =>
   document.getElementById("md-dialog").close());
+document.getElementById("status-close").addEventListener("click", () =>
+  document.getElementById("status-dialog").close());
 document.getElementById("md-copy").addEventListener("click", async () => {
   try { await navigator.clipboard.writeText(document.getElementById("md-output").value); }
   catch (e) { /* clipboard may be unavailable; the textarea is selectable */ }
@@ -586,9 +642,10 @@ document.querySelectorAll(".tab").forEach(tab =>
   try {
     const cfg = await api("/api/config");
     REPO = cfg.repo;
+    MODE = cfg.mode || "self";
     if (REPO) {
       document.getElementById("repo-label").textContent =
-        REPO + (cfg.mode === "label" ? " · delegating to team queue" : "");
+        REPO + (MODE === "label" ? " · delegating to team queue" : "");
     }
   } catch (e) { console.error(e); }
   refresh();

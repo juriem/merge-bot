@@ -235,6 +235,18 @@ There is no per-PR deadline in this mode: batch queues can legitimately hold a
 PR for a long time, and the external queue owns the pacing. The UI header shows
 `delegating to team queue` so it is obvious which mode is running.
 
+Label mode also adds **queue visibility**:
+
+- a silent background sampler (same `--recheck-interval`; API reads only, no
+  comments) tracks the external queue — the header shows **team queue** depth,
+  **merged today** and a queue-depth sparkline; the history is persisted next to
+  the state file (`<state>.stats.json`). Depth counts open PRs carrying the
+  label, so it is an upper bound (a rejected PR keeps its label);
+- every queued/active row has a **status** button: an on-demand `/status` probe
+  (posts one comment, reads the bot's reply) showing the precise picture — queue
+  length, batch threshold, wait window and whether *this* PR is actually in the
+  queue.
+
 **Rate limits** are handled transparently: the HTTP layer waits out GitHub's
 primary (`X-RateLimit-Reset`) and secondary (`Retry-After`) limits and retries,
 up to a bounded wait. If a limit would take longer than that bound, the error is

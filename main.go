@@ -17,6 +17,7 @@ import (
 	"mergebot/internal/ghclient"
 	"mergebot/internal/merge"
 	"mergebot/internal/queue"
+	"mergebot/internal/queuestats"
 	"mergebot/internal/review"
 	"mergebot/internal/server"
 )
@@ -251,9 +252,25 @@ func runServe(args []string) error {
 	dashboard := review.NewDashboard(client, owner, name, *cfg.minApprovals, *reviewAuthor, logf)
 	go dashboard.RefreshLoop(ctx, *recheck)
 
+	web := server.New(mgr, *cfg.repo, dashboard).WithMode(*mergeMode)
+
+	if *mergeMode == queue.ModeLabel {
+		statsPath := ""
+		if *statePath != "" {
+			statsPath = *statePath + ".stats.json"
+		}
+		stats := queuestats.New(client, owner, name, *queueLabel, statsPath, logf)
+		if err := stats.Load(); err != nil {
+			logf("load queue stats: %v", err)
+		}
+		go stats.Run(ctx, *recheck)
+
+		web = web.WithStats(stats).WithProber(merge.StatusProber{Client: client, Owner: owner, Repo: name})
+	}
+
 	srv := &http.Server{
 		Addr:    *addr,
-		Handler: server.New(mgr, *cfg.repo, dashboard).WithMode(*mergeMode).Handler(),
+		Handler: web.Handler(),
 	}
 
 	go func() {

@@ -2,13 +2,16 @@
 package server
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"mergebot/internal/queue"
+	"mergebot/internal/queuestats"
 	"mergebot/internal/review"
 )
 
@@ -31,12 +34,24 @@ type Reviewer interface {
 	TriggerRefresh()
 }
 
+// Stats supplies sampled external-queue depth history (label mode).
+type Stats interface {
+	History() []queuestats.Snapshot
+}
+
+// Prober asks the external queue bot for a PR's live status (label mode).
+type Prober interface {
+	Probe(ctx context.Context, number int) (string, error)
+}
+
 // Server adapts a queue manager to an http.Handler.
 type Server struct {
 	queue    Queue
 	reviewer Reviewer
 	repo     string
 	mode     string
+	stats    Stats
+	prober   Prober
 }
 
 // New builds a Server backed by the given queue and review dashboard. repo is the
@@ -48,6 +63,18 @@ func New(q Queue, repo string, reviewer Reviewer) *Server {
 // WithMode records the merge mode ("self" or "label") shown in the UI header.
 func (s *Server) WithMode(mode string) *Server {
 	s.mode = mode
+	return s
+}
+
+// WithStats attaches the external-queue stats collector (label mode).
+func (s *Server) WithStats(st Stats) *Server {
+	s.stats = st
+	return s
+}
+
+// WithProber attaches the /status prober (label mode).
+func (s *Server) WithProber(p Prober) *Server {
+	s.prober = p
 	return s
 }
 
@@ -63,8 +90,45 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/items", s.clearItems)
 	mux.HandleFunc("DELETE /api/items/{number}", s.removeItem)
 	mux.HandleFunc("POST /api/items/{number}/requeue", s.requeueItem)
+	mux.HandleFunc("GET /api/queuestats", s.queueStats)
+	mux.HandleFunc("POST /api/items/{number}/status", s.probeStatus)
 
 	return mux
+}
+
+// queueStats returns the sampled external-queue history (empty outside label mode).
+func (s *Server) queueStats(w http.ResponseWriter, r *http.Request) {
+	if s.stats == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"history": []queuestats.Snapshot{}})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"history": s.stats.History()})
+}
+
+// probeStatus asks the external queue bot for a PR's live status.
+func (s *Server) probeStatus(w http.ResponseWriter, r *http.Request) {
+	if s.prober == nil {
+		http.Error(w, "status probing is only available in label mode", http.StatusNotImplemented)
+		return
+	}
+
+	number, err := strconv.Atoi(r.PathValue("number"))
+	if err != nil || number <= 0 {
+		http.Error(w, "invalid PR number", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	status, err := s.prober.Probe(ctx, number)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": status})
 }
 
 func (s *Server) config(w http.ResponseWriter, r *http.Request) {

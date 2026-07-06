@@ -6,7 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"context"
+
 	"mergebot/internal/queue"
+	"mergebot/internal/queuestats"
 	"mergebot/internal/review"
 )
 
@@ -152,6 +155,57 @@ func Test_refreshReady_TriggersDashboard(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("TriggerRefresh called %d times, want 1", n)
+	}
+}
+
+type fakeStats struct{ history []queuestats.Snapshot }
+
+func (f fakeStats) History() []queuestats.Snapshot { return f.history }
+
+type fakeProber struct{ probed []int }
+
+func (f *fakeProber) Probe(_ context.Context, number int) (string, error) {
+	f.probed = append(f.probed, number)
+	return "Queue length: 3", nil
+}
+
+func Test_queueStats_ReturnsHistory(t *testing.T) {
+	st := fakeStats{history: []queuestats.Snapshot{{Waiting: 4, MergedToday: 2}}}
+	h := New(&fakeQueue{}, "o/r", nil).WithStats(st).Handler()
+
+	w := do(t, h, http.MethodGet, "/api/queuestats", "")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"waiting":4`) {
+		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+	}
+}
+
+func Test_queueStats_EmptyWithoutCollector(t *testing.T) {
+	h := New(&fakeQueue{}, "o/r", nil).Handler()
+
+	w := do(t, h, http.MethodGet, "/api/queuestats", "")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"history":[]`) {
+		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+	}
+}
+
+func Test_probeStatus_RoutesToProber(t *testing.T) {
+	p := &fakeProber{}
+	h := New(&fakeQueue{}, "o/r", nil).WithProber(p).Handler()
+
+	w := do(t, h, http.MethodPost, "/api/items/7416/status", "")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Queue length: 3") {
+		t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
+	}
+	if len(p.probed) != 1 || p.probed[0] != 7416 {
+		t.Fatalf("probed = %v, want [7416]", p.probed)
+	}
+}
+
+func Test_probeStatus_NotImplementedWithoutProber(t *testing.T) {
+	h := New(&fakeQueue{}, "o/r", nil).Handler()
+
+	if w := do(t, h, http.MethodPost, "/api/items/1/status", ""); w.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501", w.Code)
 	}
 }
 
