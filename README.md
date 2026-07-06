@@ -207,6 +207,27 @@ while another merges are simply updated on their next poll. The queue is
 persisted to the state file, so it survives a restart (in-flight PRs are
 re-queued).
 
+### Delegated mode (external merge queue)
+
+If the repository already has a team merge queue driven by a label (a bot that
+picks up PRs labelled e.g. `merge-queue`, validates them in batches and merges),
+run mergebot with `--merge-mode=label`. Everything else keeps working — the
+**My PRs** dashboard, triage into conflicts/failed, **Add to queue**, History and
+timing stats — but instead of merging PRs itself, mergebot:
+
+- applies the queue label (`--queue-label`, default `merge-queue`) when you add a
+  PR, and watches it until the external queue merges it;
+- reports the merge in **History** with the usual `merged in …` timing;
+- moves the PR to **Failed** if it is dequeued (label removed) or closed
+  unmerged — recovery is manual (**retry**): auto-requeueing is off in this mode
+  so mergebot never re-applies a label someone deliberately removed;
+- removes the label (best-effort) when you remove the PR from the UI, so the
+  external queue drops it too.
+
+There is no per-PR deadline in this mode: batch queues can legitimately hold a
+PR for a long time, and the external queue owns the pacing. The UI header shows
+`delegating to team queue` so it is obvious which mode is running.
+
 **Rate limits** are handled transparently: the HTTP layer waits out GitHub's
 primary (`X-RateLimit-Reset`) and secondary (`Retry-After`) limits and retries,
 up to a bounded wait. If a limit would take longer than that bound, the error is
@@ -251,6 +272,8 @@ Every flag has an environment-variable fallback. Precedence:
 | `--recheck-interval` | `MERGEBOT_RECHECK_INTERVAL` | `5m`             | `serve` only; re-check parked PRs; `0` disables |
 | `--concurrency`   | `MERGEBOT_CONCURRENCY`    | `1`                   | `serve` only; PRs driven in parallel |
 | `--review-author` | `MERGEBOT_REVIEW_AUTHOR`  | token owner           | `serve` only; GitHub login for the My PRs dashboard |
+| `--merge-mode`    | `MERGEBOT_MERGE_MODE`     | `self`                | `serve` only; `self` merges directly, `label` delegates to an external queue |
+| `--queue-label`   | `MERGEBOT_QUEUE_LABEL`    | `merge-queue`         | `serve` only; label that triggers the external queue |
 
 ## Releasing
 

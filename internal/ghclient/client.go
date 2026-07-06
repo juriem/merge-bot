@@ -19,6 +19,7 @@ import (
 
 // Client implements the review dashboard's Fetcher in addition to merge.GitHub.
 var _ review.Fetcher = (*Client)(nil)
+var _ merge.LabelClient = (*Client)(nil)
 
 // Client is a thin wrapper around go-github exposing only the operations the
 // merge runner relies on.
@@ -102,6 +103,25 @@ func (c *Client) BehindBy(ctx context.Context, owner, repo, base, head string) (
 	}
 
 	return cmp.GetBehindBy(), nil
+}
+
+// AddLabel puts a label on a pull request (labels live on the issue side of the
+// API). Adding an already-present label is a no-op on GitHub's side.
+func (c *Client) AddLabel(ctx context.Context, owner, repo string, number int, label string) error {
+	_, _, err := c.gh.Issues.AddLabelsToIssue(ctx, owner, repo, number, []string{label})
+
+	return err
+}
+
+// RemoveLabel removes a label from a pull request. A 404 (label not present)
+// counts as success — the desired state is reached either way.
+func (c *Client) RemoveLabel(ctx context.Context, owner, repo string, number int, label string) error {
+	resp, err := c.gh.Issues.RemoveLabelForIssue(ctx, owner, repo, number, label)
+	if err != nil && resp != nil && resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+
+	return err
 }
 
 // CurrentUser returns the login of the authenticated token owner.

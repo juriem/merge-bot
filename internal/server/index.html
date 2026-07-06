@@ -577,8 +577,12 @@ document.querySelectorAll(".tab").forEach(tab =>
 
 (async () => {
   try {
-    REPO = (await api("/api/config")).repo;
-    if (REPO) document.getElementById("repo-label").textContent = REPO;
+    const cfg = await api("/api/config");
+    REPO = cfg.repo;
+    if (REPO) {
+      document.getElementById("repo-label").textContent =
+        REPO + (cfg.mode === "label" ? " · delegating to team queue" : "");
+    }
   } catch (e) { console.error(e); }
   refresh();
   setInterval(refresh, 3000);

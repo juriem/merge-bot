@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +23,63 @@ func (conflictGitHub) GetPullRequest(context.Context, string, string, int) (*git
 		Head:           &github.PullRequestBranch{SHA: github.String("headsha")},
 		Base:           &github.PullRequestBranch{Ref: github.String("main")},
 	}, nil
+}
+
+// labelGitHub implements both merge.GitHub and merge.LabelClient: the PR
+// reports merged as soon as the queue label has been applied.
+type labelGitHub struct {
+	merge.GitHub
+	mu      sync.Mutex
+	added   []string
+	removed []string
+}
+
+func (g *labelGitHub) GetPullRequest(context.Context, string, string, int) (*github.PullRequest, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	pr := &github.PullRequest{State: github.String("open"), Merged: github.Bool(false)}
+	if len(g.added) > 0 {
+		pr.Merged = github.Bool(true)
+		pr.State = github.String("closed")
+	}
+	return pr, nil
+}
+
+func (g *labelGitHub) AddLabel(_ context.Context, _, _ string, _ int, label string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.added = append(g.added, label)
+	return nil
+}
+
+func (g *labelGitHub) RemoveLabel(_ context.Context, _, _ string, _ int, label string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.removed = append(g.removed, label)
+	return nil
+}
+
+func Test_process_LabelModeDelegatesAndTracksMerge(t *testing.T) {
+	// Arrange
+	g := &labelGitHub{}
+	m := New(g, Config{
+		Owner: "o", Repo: "r", Interval: time.Millisecond,
+		MergeMode: ModeLabel, QueueLabel: "merge-queue",
+	}, "", func(string, ...any) {})
+	it := &Item{Number: 1, Phase: PhaseQueued, AddedAt: time.Now()}
+
+	// Act
+	m.process(context.Background(), it)
+
+	// Assert
+	if it.Phase != PhaseMerged {
+		t.Fatalf("expected phase %q, got %q", PhaseMerged, it.Phase)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.added) != 1 || g.added[0] != "merge-queue" {
+		t.Fatalf("labels added = %v, want [merge-queue]", g.added)
+	}
 }
 
 func Test_process_MovesConflictingPRToConflictsPhase(t *testing.T) {

@@ -36,12 +36,19 @@ type Server struct {
 	queue    Queue
 	reviewer Reviewer
 	repo     string
+	mode     string
 }
 
 // New builds a Server backed by the given queue and review dashboard. repo is the
 // owner/name shown in the UI for building PR links. reviewer may be nil.
 func New(q Queue, repo string, reviewer Reviewer) *Server {
 	return &Server{queue: q, reviewer: reviewer, repo: repo}
+}
+
+// WithMode records the merge mode ("self" or "label") shown in the UI header.
+func (s *Server) WithMode(mode string) *Server {
+	s.mode = mode
+	return s
 }
 
 // Handler returns the routed HTTP handler.
@@ -61,7 +68,7 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) config(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"repo": s.repo})
+	writeJSON(w, http.StatusOK, map[string]string{"repo": s.repo, "mode": s.mode})
 }
 
 func (s *Server) index(w http.ResponseWriter, r *http.Request) {

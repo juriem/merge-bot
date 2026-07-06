@@ -191,6 +191,8 @@ func runServe(args []string) error {
 	recheck := fs.Duration("recheck-interval", envDurationOr("MERGEBOT_RECHECK_INTERVAL", 5*time.Minute), "how often to re-check parked (needs-approvals) PRs; 0 disables")
 	concurrency := fs.Int("concurrency", envIntOr("MERGEBOT_CONCURRENCY", 1), "how many PRs to drive in parallel")
 	reviewAuthor := fs.String("review-author", envOr("MERGEBOT_REVIEW_AUTHOR", ""), "GitHub login for the My PRs dashboard (default: token owner)")
+	mergeMode := fs.String("merge-mode", envOr("MERGEBOT_MERGE_MODE", queue.ModeSelf), "self merges PRs directly; label delegates to an external merge queue by applying --queue-label")
+	queueLabel := fs.String("queue-label", envOr("MERGEBOT_QUEUE_LABEL", "merge-queue"), "label that triggers the external merge queue (merge-mode=label)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -203,6 +205,12 @@ func runServe(args []string) error {
 	}
 	if *recheck < 0 {
 		return fmt.Errorf("--recheck-interval cannot be negative, got %s", *recheck)
+	}
+	if *mergeMode != queue.ModeSelf && *mergeMode != queue.ModeLabel {
+		return fmt.Errorf("--merge-mode must be %q or %q, got %q", queue.ModeSelf, queue.ModeLabel, *mergeMode)
+	}
+	if *mergeMode == queue.ModeLabel && *queueLabel == "" {
+		return fmt.Errorf("--queue-label cannot be empty in merge-mode=label")
 	}
 
 	owner, name, err := splitRepo(*cfg.repo)
@@ -228,6 +236,8 @@ func runServe(args []string) error {
 		MergeMethod:     *cfg.mergeMethod,
 		MinApprovals:    *cfg.minApprovals,
 		Concurrency:     *concurrency,
+		MergeMode:       *mergeMode,
+		QueueLabel:      *queueLabel,
 		AllowUnstable:   *cfg.allowUnstable,
 		AllowUnresolved: *cfg.allowUnresolved,
 	}, *statePath, logf)
@@ -243,7 +253,7 @@ func runServe(args []string) error {
 
 	srv := &http.Server{
 		Addr:    *addr,
-		Handler: server.New(mgr, *cfg.repo, dashboard).Handler(),
+		Handler: server.New(mgr, *cfg.repo, dashboard).WithMode(*mergeMode).Handler(),
 	}
 
 	go func() {

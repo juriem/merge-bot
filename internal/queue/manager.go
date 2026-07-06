@@ -39,6 +39,13 @@ type Item struct {
 	MergedAt  *time.Time `json:"merged_at,omitempty"` // set once merged; AddedAt→MergedAt is the time to merge
 }
 
+// Merge modes: self merges PRs directly (the classic behaviour); label hands
+// each PR to an external label-driven merge queue and only watches the outcome.
+const (
+	ModeSelf  = "self"
+	ModeLabel = "label"
+)
+
 // Config holds the merge settings shared by every processed pull request.
 type Config struct {
 	Owner           string
@@ -48,7 +55,9 @@ type Config struct {
 	RecheckInterval time.Duration // how often to re-check parked (needs-approvals) PRs; 0 disables
 	MergeMethod     string
 	MinApprovals    int
-	Concurrency     int // how many PRs to drive in parallel; <1 means 1
+	Concurrency     int    // how many PRs to drive in parallel; <1 means 1
+	MergeMode       string // ModeSelf (default) or ModeLabel
+	QueueLabel      string // label that triggers the external queue in ModeLabel
 	AllowUnstable   bool
 	AllowUnresolved bool
 }
@@ -388,7 +397,12 @@ func (m *Manager) recheckParked(ctx context.Context) {
 	}
 
 	m.recheckByState(ctx, conflicts, PhaseConflicts, conflictResolved, "conflict resolved; back in queue")
-	m.recheckByState(ctx, failed, PhaseFailed, checksRecovered, "checks recovered; back in queue")
+	// In label mode a failed item usually means someone deliberately dequeued the
+	// PR (removed the label); auto-requeueing would fight them by re-applying it,
+	// so recovery there is manual (retry). Self mode auto-recovers as usual.
+	if m.cfg.MergeMode != ModeLabel {
+		m.recheckByState(ctx, failed, PhaseFailed, checksRecovered, "checks recovered; back in queue")
+	}
 }
 
 // recheckByState re-queues each parked PR whose current mergeable_state satisfies
@@ -451,8 +465,27 @@ func (m *Manager) requeueParked(number int, from Phase, msg string) {
 	m.notify()
 }
 
-func (m *Manager) process(ctx context.Context, it *Item) {
-	runner := merge.Runner{
+// drive runs one PR to completion using the configured merge mode: merging it
+// ourselves (self) or handing it to the external label-driven queue (label).
+func (m *Manager) drive(ctx context.Context, it *Item) error {
+	if m.cfg.MergeMode == ModeLabel {
+		lc, ok := m.client.(merge.LabelClient)
+		if !ok {
+			return fmt.Errorf("merge mode %q requires a label-capable GitHub client", ModeLabel)
+		}
+
+		return merge.DelegateRunner{
+			Client:   lc,
+			Owner:    m.cfg.Owner,
+			Repo:     m.cfg.Repo,
+			Number:   it.Number,
+			Label:    m.cfg.QueueLabel,
+			Interval: m.cfg.Interval,
+			Logf:     m.itemLogger(it),
+		}.Run(ctx)
+	}
+
+	return merge.Runner{
 		Client:          m.client,
 		Owner:           m.cfg.Owner,
 		Repo:            m.cfg.Repo,
@@ -464,9 +497,27 @@ func (m *Manager) process(ctx context.Context, it *Item) {
 		AllowUnstable:   m.cfg.AllowUnstable,
 		AllowUnresolved: m.cfg.AllowUnresolved,
 		Logf:            m.itemLogger(it),
+	}.Run(ctx)
+}
+
+// removeQueueLabel best-effort dequeues a PR from the external queue after a
+// manual stop, so removing it in the UI also removes it from the team queue.
+func (m *Manager) removeQueueLabel(number int) {
+	lc, ok := m.client.(merge.LabelClient)
+	if !ok {
+		return
 	}
 
-	err := runner.Run(ctx)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := lc.RemoveLabel(ctx, m.cfg.Owner, m.cfg.Repo, number, m.cfg.QueueLabel); err != nil {
+		m.logf("remove %q label from PR #%d: %v", m.cfg.QueueLabel, number, err)
+	}
+}
+
+func (m *Manager) process(ctx context.Context, it *Item) {
+	err := m.drive(ctx, it)
 
 	m.mu.Lock()
 	if cancel := m.cancels[it.Number]; cancel != nil {
@@ -477,7 +528,11 @@ func (m *Manager) process(ctx context.Context, it *Item) {
 
 	switch {
 	case it.Phase == PhaseStopped:
-		// Removed by the user while active; keep the stopped state.
+		// Removed by the user while active; keep the stopped state. In label mode
+		// also take the PR out of the external queue, best-effort.
+		if m.cfg.MergeMode == ModeLabel {
+			go m.removeQueueLabel(it.Number)
+		}
 	case err == nil:
 		merged := now
 		it.Phase = PhaseMerged
