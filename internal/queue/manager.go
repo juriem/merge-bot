@@ -274,11 +274,7 @@ func (m *Manager) Requeue(number int) bool {
 func (m *Manager) Run(ctx context.Context) {
 	go m.recheckLoop(ctx)
 
-	workers := m.cfg.Concurrency
-	if workers < 1 {
-		workers = 1
-	}
-	slots := make(chan struct{}, workers)
+	slots := make(chan struct{}, m.effectiveConcurrency())
 	var wg sync.WaitGroup
 
 	for {
@@ -308,6 +304,27 @@ func (m *Manager) Run(ctx context.Context) {
 			m.process(procCtx, it)
 		}(it, procCtx)
 	}
+}
+
+// mergeQueueWorkers caps parallel hand-offs in merge-queue mode. The external
+// queue owns batching and pacing (it waits to fill a batch), so mergebot hands
+// every ready PR over at once instead of throttling with --concurrency — else a
+// low concurrency would starve the batch and a PR waiting on its checks would
+// block others from being queued. The cap only guards against a goroutine
+// explosion on an absurdly large queue.
+const mergeQueueWorkers = 100
+
+// effectiveConcurrency is how many PRs the worker pool drives at once. In
+// merge-queue mode the --concurrency limit does not apply (see above).
+func (m *Manager) effectiveConcurrency() int {
+	if m.cfg.MergeMode == ModeMergeQueue {
+		return mergeQueueWorkers
+	}
+	if m.cfg.Concurrency < 1 {
+		return 1
+	}
+
+	return m.cfg.Concurrency
 }
 
 // claim atomically selects the first queued PR, marks it active and registers a

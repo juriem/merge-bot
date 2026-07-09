@@ -291,7 +291,7 @@ Every flag has an environment-variable fallback. Precedence:
 | `--addr`          | `MERGEBOT_ADDR`           | `127.0.0.1:8080`      | `serve` only                  |
 | `--state`         | `MERGEBOT_STATE`          | `mergebot-queue.json` | `serve` only                  |
 | `--recheck-interval` | `MERGEBOT_RECHECK_INTERVAL` | `5m`             | `serve` only; re-check parked PRs; `0` disables |
-| `--concurrency`   | `MERGEBOT_CONCURRENCY`    | `1`                   | `serve` only; PRs driven in parallel |
+| `--concurrency`   | `MERGEBOT_CONCURRENCY`    | `1`                   | `serve` only; PRs driven in parallel (ignored in merge-queue mode) |
 | `--review-author` | `MERGEBOT_REVIEW_AUTHOR`  | token owner           | `serve` only; GitHub login for the My PRs dashboard |
 | `--merge-mode`    | `MERGEBOT_MERGE_MODE`     | `self`                | `serve` only; `self` merges directly, `merge-queue` delegates to the team queue (comment-driven) |
 

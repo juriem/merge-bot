@@ -63,6 +63,24 @@ func (g *teamQueueGitHub) ListComments(context.Context, string, string, int, tim
 	return nil, nil
 }
 
+func Test_effectiveConcurrency_IgnoresLimitInMergeQueueMode(t *testing.T) {
+	// self mode honours --concurrency (with a floor of 1)
+	self := New(&teamQueueGitHub{}, Config{Concurrency: 3}, "", func(string, ...any) {})
+	if got := self.effectiveConcurrency(); got != 3 {
+		t.Fatalf("self concurrency = %d, want 3", got)
+	}
+	selfZero := New(&teamQueueGitHub{}, Config{Concurrency: 0}, "", func(string, ...any) {})
+	if got := selfZero.effectiveConcurrency(); got != 1 {
+		t.Fatalf("self concurrency floor = %d, want 1", got)
+	}
+
+	// merge-queue mode ignores --concurrency and hands everything over at once
+	mq := New(&teamQueueGitHub{}, Config{Concurrency: 1, MergeMode: ModeMergeQueue}, "", func(string, ...any) {})
+	if got := mq.effectiveConcurrency(); got != mergeQueueWorkers {
+		t.Fatalf("merge-queue concurrency = %d, want %d", got, mergeQueueWorkers)
+	}
+}
+
 func Test_process_MergeQueueModeDelegatesAndTracksMerge(t *testing.T) {
 	// Arrange
 	g := &teamQueueGitHub{}

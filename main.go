@@ -190,7 +190,7 @@ func runServe(args []string) error {
 	addr := fs.String("addr", envOr("MERGEBOT_ADDR", "127.0.0.1:8080"), "address to listen on")
 	statePath := fs.String("state", envOr("MERGEBOT_STATE", "mergebot-queue.json"), "path to the queue state file")
 	recheck := fs.Duration("recheck-interval", envDurationOr("MERGEBOT_RECHECK_INTERVAL", 5*time.Minute), "how often to re-check parked (needs-approvals) PRs; 0 disables")
-	concurrency := fs.Int("concurrency", envIntOr("MERGEBOT_CONCURRENCY", 1), "how many PRs to drive in parallel")
+	concurrency := fs.Int("concurrency", envIntOr("MERGEBOT_CONCURRENCY", 1), "how many PRs to drive in parallel (ignored in merge-queue mode: the team queue batches)")
 	reviewAuthor := fs.String("review-author", envOr("MERGEBOT_REVIEW_AUTHOR", ""), "GitHub login for the My PRs dashboard (default: token owner)")
 	mergeMode := fs.String("merge-mode", envOr("MERGEBOT_MERGE_MODE", queue.ModeSelf), "self merges PRs directly; merge-queue delegates to the team merge queue (comment-driven)")
 	if err := fs.Parse(args); err != nil {
